@@ -1,0 +1,11 @@
+name: AI Code Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run AI Review
+        run: curl -X POST https://your-api-url/analyze -d '{"repo": "${{ github.repository }}"}'
