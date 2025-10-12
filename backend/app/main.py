@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import analyze
+from app.routes import pr_analyze
 
 app = FastAPI(title="AI Code Review Assistant")
 
@@ -18,6 +19,7 @@ app.add_middleware(
 
 # Include your analyzer routes
 app.include_router(analyze.router)
+app.include_router(pr_analyze.router)
 
 @app.get("/")
 def root():

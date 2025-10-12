@@ -8,3 +8,10 @@ export const analyzeRepo = async (repoUrl: string) => {
   });
   return response.data;
 };
+
+export const analyzePR = async (prUrl: string) => {
+  const response = await axios.get(`${API_URL}/analyze-pr`, {
+    params: { pr_url: prUrl },
+  });
+  return response.data;
+};
