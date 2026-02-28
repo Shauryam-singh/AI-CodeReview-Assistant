@@ -1,11 +1,6 @@
 fastapi
 uvicorn
-requests
-bandit
-pylint
-python-dotenv
-torch
-transformers
-scikit-learn
-spacy
 gitpython
+requests
+pydantic
+semgrep

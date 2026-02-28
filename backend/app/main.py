@@ -1,26 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import analyze
-from app.routes import pr_analyze
+from app.routes import analyze, pr_analyze
 
-app = FastAPI(title="AI Code Review Assistant")
+app = FastAPI(title="AI-CodeReview-Assistant", version="1.1")
 
-# Add CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # React dev server
-        "http://127.0.0.1:5173",  # Alternate local URL
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Include your analyzer routes
 app.include_router(analyze.router)
 app.include_router(pr_analyze.router)
 
 @app.get("/")
 def root():
-    return {"message": "AI Code Review Assistant API is running 🚀"}
+    return {"status": "running"}

@@ -1,65 +1,66 @@
-import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
-import LandingPage from "./pages/LandingPage"; 
-import PRInputForm from "./components/PRInputForm";
-import FullRepoInputForm from "./components/FullRepoInputForm";
+import { BrowserRouter as Router, Routes, Route, useLocation } from "react-router-dom";
+import { useEffect } from "react";
+
+import Navbar from "./components/layout/Navbar";
+import Footer from "./components/layout/Footer";
+import LandingPage from "./pages/LandingPage";
+import PRInputForm from "./components/layout/PRInputForm";
+import FullRepoInputForm from "./components/layout/FullRepoInputForm";
+import Docs from "./pages/Docs";
+
+function ScrollToTop() {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    window.scrollTo({
+      top: 0,
+      left: 0,
+      behavior: "instant",
+    });
+  }, [pathname]);
+
+  return null;
+}
 
 function App() {
   return (
     <Router>
-      <div className="flex flex-col min-h-screen bg-gray-950">
+      <ScrollToTop />
+
+      <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 selection:bg-indigo-100 selection:text-indigo-700 transition-colors duration-500 font-sans">
         
-        {/* Navbar */}
-        <nav className="bg-gray-950 border-b border-purple-700/50 text-white shadow-2xl shadow-purple-900/10 sticky top-0 z-50">
-          <div className="max-w-8xl mx-auto px-8 py-3 flex justify-between items-center">
-            {/* Logo */}
-            <Link to="/" className="text-3xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-600 transition duration-300 hover:opacity-80">
-              //AI:CodeAudit
-            </Link>
-            
-            {/* Navigation Links */}
-            <div className="space-x-8 font-semibold text-lg">
-              <Link 
-                to="/" 
-                className="text-gray-300 transition duration-200 relative group"
-              >
-                Home
-                <span className="absolute left-0 bottom-[-5px] w-0 h-0.5 bg-cyan-400 group-hover:w-full transition-all duration-300" />
-              </Link>
-              
-              <Link 
-                to="/analyze" 
-                className="text-gray-300 transition duration-200 relative group"
-              >
-                Analyze Repo
-                <span className="absolute left-0 bottom-[-5px] w-0 h-0.5 bg-cyan-400 group-hover:w-full transition-all duration-300" />
-              </Link>
+        <Navbar />
 
-              <Link 
-                to="/analyze-pr" 
-                className="text-gray-300 transition duration-200 relative group"
-              >
-                Analyze PR
-                <span className="absolute left-0 bottom-[-5px] w-0 h-0.5 bg-cyan-400 group-hover:w-full transition-all duration-300" />
-              </Link>
-            </div>
-          </div>
-        </nav>
-
-        {/* Routes Container */}
-        <div className="flex-1">
+        <main className="flex-1">
           <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/analyze" element={<FullRepoInputForm />} />
             <Route path="/analyze-pr" element={<PRInputForm />} />
+            <Route path="/docs/*" element={<Docs />} />
+            
+            {/* 404 Route */}
+            <Route 
+              path="*" 
+              element={
+                <div className="flex flex-col items-center justify-center h-[70vh] space-y-6 text-center px-4">
+                  <h1 className="text-8xl font-black text-slate-200 tracking-tighter select-none">404</h1>
+                  <div className="space-y-2">
+                    <p className="text-slate-900 text-xl font-bold tracking-tight">Page not found</p>
+                    <p className="text-slate-500 max-w-xs mx-auto">The requested resource could not be located in our system.</p>
+                  </div>
+                  <a 
+                    href="/" 
+                    className="px-6 py-2 bg-white border border-slate-200 text-slate-600 rounded-full hover:bg-slate-50 transition-all shadow-sm font-medium"
+                  >
+                    Return Home
+                  </a>
+                </div>
+              } 
+            />
           </Routes>
-        </div>
+        </main>
 
-        {/* Footer */}
-        <footer className="bg-gray-950 border-t border-blue-700/50 text-gray-500 py-6 text-center mt-auto text-sm tracking-widest">
-          <p>
-            MADE BY: SHAURYAM | © {new Date().getFullYear()} AI Code Review Assistant.
-          </p>
-        </footer>
+        <Footer />
       </div>
     </Router>
   );
