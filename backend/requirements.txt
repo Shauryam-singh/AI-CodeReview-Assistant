@@ -4,3 +4,4 @@ gitpython
 requests
 pydantic
 semgrep
+python-dotenv
