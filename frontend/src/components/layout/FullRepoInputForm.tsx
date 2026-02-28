@@ -20,7 +20,8 @@ export default function FullRepoInputForm() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [scanStep, setScanStep] = useState(0);
-
+  const API_URL = import.meta.env.VITE_API_URL;
+  
   const steps = [
     "Cloning remote repository...",
     "Running Semgrep static analysis...",
@@ -47,7 +48,7 @@ export default function FullRepoInputForm() {
     setResult(null);
 
     try {
-      const response = await fetch("http://localhost:8000/analyze/", {
+      const response = await fetch(`${API_URL}/analyze/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_url: repoUrl }),

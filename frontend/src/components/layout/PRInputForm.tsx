@@ -20,6 +20,7 @@ export default function PRInputForm() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [statusText, setStatusText] = useState("");
+  const API_URL = import.meta.env.VITE_API_URL;
 
   const loadingStates = [
     "Fetching Pull Request metadata...",
@@ -47,7 +48,7 @@ export default function PRInputForm() {
     setResult(null);
 
     try {
-      const response = await fetch(`http://localhost:8000/analyze-pr?pr_url=${encodeURIComponent(prUrl)}`);
+      const response = await fetch(`${API_URL}/analyze-pr?pr_url=${encodeURIComponent(prUrl)}`);
       if (!response.ok) throw new Error("Could not access Pull Request. Ensure it is a public repository.");
       const data = await response.json();
       setResult(data);
