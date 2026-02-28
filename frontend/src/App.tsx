@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { BrowserRouter as Router, Routes, Route, useLocation } from "react-router-dom";
 import { useEffect } from "react";
 
@@ -21,10 +22,19 @@ function ScrollToTop() {
 
   return null;
 }
+=======
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import LandingPage from "./pages/LandingPage"; 
+import PRInputForm from "./components/PRInputForm";
+import FullRepoInputForm from "./components/FullRepoInputForm";
+import Navbar from "./components/Navbar";
+import Footer from "./components/Footer";
+>>>>>>> 0df6e60c82e66018563f77148062f66864321997
 
 function App() {
   return (
     <Router>
+<<<<<<< HEAD
       <ScrollToTop />
 
       <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 selection:bg-indigo-100 selection:text-indigo-700 transition-colors duration-500 font-sans">
@@ -32,6 +42,14 @@ function App() {
         <Navbar />
 
         <main className="flex-1">
+=======
+      <div className="flex-col min-h-screen">
+        
+        <Navbar />
+
+        {/* Routes Container */}
+        <div className="flex-1">
+>>>>>>> 0df6e60c82e66018563f77148062f66864321997
           <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/analyze" element={<FullRepoInputForm />} />
@@ -61,7 +79,12 @@ function App() {
         </main>
 
         <Footer />
+<<<<<<< HEAD
+=======
+
+>>>>>>> 0df6e60c82e66018563f77148062f66864321997
       </div>
+
     </Router>
   );
 }
