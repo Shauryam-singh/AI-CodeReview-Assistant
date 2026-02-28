@@ -8,18 +8,26 @@ def run_semgrep(path: str):
         process = subprocess.run(
             [
                 "semgrep",
-                "ci",  # uses full rules after login
+                "--config", "auto",
                 "--json",
                 "--no-git-ignore",
                 path
             ],
             capture_output=True,
             text=True,
-            timeout=600  # prevent hangs
+            timeout=600
         )
+
+        # semgrep returns:
+        # 0 = no findings
+        # 1 = findings found
+        # >1 = error
 
         if process.returncode not in [0, 1]:
             print("Semgrep error:", process.stderr)
+            return []
+
+        if not process.stdout.strip():
             return []
 
         data = json.loads(process.stdout)
@@ -31,8 +39,6 @@ def run_semgrep(path: str):
             line = r.get("start", {}).get("line")
             message = r.get("extra", {}).get("message", "Issue detected")
             severity = r.get("extra", {}).get("severity", "UNKNOWN")
-
-            # Extract code snippet if available
             snippet = r.get("extra", {}).get("lines", "").strip()
 
             risk = infer_risk(severity)
