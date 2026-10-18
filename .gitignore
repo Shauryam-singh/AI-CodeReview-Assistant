@@ -1,0 +1,33 @@
+# Environment files (may contain secrets)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Logs & OS noise
+*.log
+npm-debug.log*
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
