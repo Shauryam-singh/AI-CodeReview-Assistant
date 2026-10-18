@@ -106,8 +106,10 @@ Make sure `requirements.txt` includes:
 fastapi
 uvicorn
 gitpython
-semgrep
+semgrep; sys_platform != "win32"
 ```
+
+> **Note:** Semgrep runs on Linux/macOS/Docker; on native Windows it's skipped automatically (the AST and secret scans still run).
 
 ---
 
@@ -239,83 +241,3 @@ Built with ❤️ Shauryam Singh
 MIT License
 
 ---
-
-```
-AI-CodeReview-Assistant
-├─ backend
-│  ├─ .env
-│  ├─ app
-│  │  ├─ main.py
-│  │  ├─ models
-│  │  │  ├─ schemas.py
-│  │  │  └─ __pycache__
-│  │  │     └─ schemas.cpython-313.pyc
-│  │  ├─ routes
-│  │  │  ├─ analyze.py
-│  │  │  ├─ pr_analyze.py
-│  │  │  └─ __pycache__
-│  │  │     ├─ analyze.cpython-313.pyc
-│  │  │     └─ pr_analyze.cpython-313.pyc
-│  │  ├─ services
-│  │  │  ├─ ast_service.py
-│  │  │  ├─ repo_service.py
-│  │  │  ├─ risk_service.py
-│  │  │  ├─ scan_service.py
-│  │  │  ├─ secret_service.py
-│  │  │  ├─ semgrep_service.py
-│  │  │  └─ __pycache__
-│  │  │     ├─ ast_service.cpython-313.pyc
-│  │  │     ├─ repo_service.cpython-313.pyc
-│  │  │     ├─ risk_service.cpython-313.pyc
-│  │  │     ├─ scan_service.cpython-313.pyc
-│  │  │     ├─ secret_service.cpython-313.pyc
-│  │  │     └─ semgrep_service.cpython-313.pyc
-│  │  └─ __pycache__
-│  │     ├─ main.cpython-313.pyc
-│  │     └─ __init__.cpython-313.pyc
-│  └─ requirements.txt
-├─ frontend
-│  ├─ .env
-│  ├─ eslint.config.js
-│  ├─ index.html
-│  ├─ package-lock.json
-│  ├─ package.json
-│  ├─ public
-│  │  └─ vite.svg
-│  ├─ README.md
-│  ├─ src
-│  │  ├─ App.css
-│  │  ├─ App.tsx
-│  │  ├─ assets
-│  │  │  └─ react.svg
-│  │  ├─ components
-│  │  │  ├─ Footer.tsx
-│  │  │  ├─ FullRepoInputForm.tsx
-│  │  │  ├─ landing
-│  │  │  │  ├─ CTA.tsx
-│  │  │  │  ├─ Features.tsx
-│  │  │  │  ├─ Hero.tsx
-│  │  │  │  └─ Steps.tsx
-│  │  │  ├─ layout
-│  │  │  │  ├─ Footer.tsx
-│  │  │  │  ├─ FullRepoInputForm.tsx
-│  │  │  │  ├─ Navbar.tsx
-│  │  │  │  ├─ PRInputForm.tsx
-│  │  │  │  └─ ResultsDashboard.tsx
-│  │  │  ├─ Navbar.tsx
-│  │  │  └─ PRInputForm.tsx
-│  │  ├─ index.css
-│  │  ├─ main.tsx
-│  │  ├─ pages
-│  │  │  ├─ Docs.tsx
-│  │  │  └─ LandingPage.tsx
-│  │  └─ services
-│  │     └─ api.ts
-│  ├─ tsconfig.app.json
-│  ├─ tsconfig.json
-│  ├─ tsconfig.node.json
-│  └─ vite.config.ts
-├─ LICENSE
-└─ README.md
-
-```

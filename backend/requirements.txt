@@ -3,5 +3,5 @@ uvicorn
 gitpython
 requests
 pydantic
-semgrep
+semgrep; sys_platform != "win32"
 python-dotenv

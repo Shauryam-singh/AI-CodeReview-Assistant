@@ -4,7 +4,6 @@ from app.models.schemas import RepoAnalyzeRequest
 from app.services.github.repo_service import clone_repo
 from app.services.context.context_builder import build_repo_context
 from app.services.existing.scan_service import scan_repository
-from app.services.existing.semgrep_service import run_semgrep
 
 router = APIRouter(prefix="/analyze")
 
@@ -23,11 +22,15 @@ def analyze_repo(data: RepoAnalyzeRequest):
             commits=[]
         )
 
-        print("STEP 3: Running scan...")
+        print("STEP 3: Running scan (AST + secrets + semgrep)...")
         scan_results = scan_repository(repo_path)
 
-        print("STEP 4: Running semgrep...")
-        semgrep_results = run_semgrep(repo_path)
+        # Semgrep findings are already inside scan_results.issues
+        # (scan_repository runs semgrep), so don't run it a second time.
+        semgrep_results = [
+            issue for issue in scan_results.get("issues", [])
+            if issue.get("tool") == "semgrep"
+        ]
 
         return {
             "scan_results": scan_results,

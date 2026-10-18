@@ -1,10 +1,27 @@
 import os
 import subprocess
+import sys
 import json
+import functools
 from app.services.existing.risk_service import infer_risk
+
+@functools.lru_cache(maxsize=1)
+def semgrep_available() -> bool:
+    # Windows only ever gets the wrapper wheel (no semgrep-core engine),
+    # so shutil.which would find a script that crashes at runtime.
+    if sys.platform == "win32":
+        return False
+    try:
+        r = subprocess.run(["semgrep", "--version"], capture_output=True, timeout=15)
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
 def run_semgrep_targeted(repo_path, file_list):
     if not file_list:
+        return []
+
+    if not semgrep_available():
         return []
 
     target_files = [os.path.join(repo_path, f) for f in file_list if os.path.exists(os.path.join(repo_path, f))]
@@ -54,6 +71,8 @@ def run_semgrep_targeted(repo_path, file_list):
         return []
 
 def run_semgrep(path: str):
+    if not semgrep_available():
+        return []
     try:
         process = subprocess.run(
             [
