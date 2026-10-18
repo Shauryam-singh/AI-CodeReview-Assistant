@@ -5,12 +5,19 @@ from app.services.github.repo_service import clone_repo
 from app.services.context.context_builder import build_repo_context
 from app.services.existing.scan_service import scan_repository
 from app.services.limits import RepoTooLargeError
+from app.services.url_validator import validate_github_repo_url, InvalidRepoUrlError
 
 router = APIRouter(prefix="/analyze")
 
 @router.post("/")
 def analyze_repo(data: RepoAnalyzeRequest):
     try:
+        try:
+            canonical = validate_github_repo_url(data.repo_url)
+            data.repo_url = canonical
+        except InvalidRepoUrlError as e:
+            raise HTTPException(status_code=400, detail=e.message)
+
         print("STEP 1: Cloning repo...")
         repo_path = clone_repo(data.repo_url)
 
@@ -38,6 +45,13 @@ def analyze_repo(data: RepoAnalyzeRequest):
             "semgrep": semgrep_results,
             "context": context
         }
+
+    except InvalidRepoUrlError as e:
+        print("INVALID URL:", e)
+        raise HTTPException(status_code=400, detail=e.message)
+
+    except HTTPException:
+        raise
 
     except RepoTooLargeError as e:
         print("REJECTED:", e)

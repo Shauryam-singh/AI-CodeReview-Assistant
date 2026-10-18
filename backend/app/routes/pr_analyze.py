@@ -4,6 +4,7 @@ import re
 from app.services.pipeline_service import run_pipeline
 from app.services.existing.scan_service import scan_pr_changes
 from app.services.limits import RepoTooLargeError
+from app.services.url_validator import validate_github_repo_url, InvalidRepoUrlError
 
 router = APIRouter()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -18,9 +19,14 @@ def parse_github_url(url: str):
 @router.get("/analyze-pr")
 def analyze_pr(pr_url: str):
     try:
+        try:
+            validate_github_repo_url(pr_url)
+        except InvalidRepoUrlError as e:
+            raise HTTPException(status_code=400, detail=e.message)
+
         owner, repo_name, pr_number = parse_github_url(pr_url)
         repo_slug = f"{owner}/{repo_name}"
-        repo_full_url = f"https://github.com/{repo_slug}"
+        repo_full_url = f"https://github.com/{repo_slug}.git"
 
         # Step 1: Clone and Build Context
         pipeline_data = run_pipeline(repo_full_url, repo_slug, pr_number, GITHUB_TOKEN)
@@ -51,6 +57,13 @@ def analyze_pr(pr_url: str):
             "total_files_found": len(changed_files),
             "total_files_scanned": len(changed_files)
         }
+
+    except InvalidRepoUrlError as e:
+        print("INVALID URL:", e)
+        raise HTTPException(status_code=400, detail=e.message)
+
+    except HTTPException:
+        raise
 
     except RepoTooLargeError as e:
         print("REJECTED:", e)
