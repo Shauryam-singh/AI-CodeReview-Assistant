@@ -201,8 +201,11 @@ POST /analyze/
 
 If deployed on **Render Free Plan**:
 - 512MB RAM limit
-- Large repositories may cause memory crash
+- Repositories are limited to 200MB (clone size) with a 120s clone timeout; larger/slower repos are rejected with HTTP 413/504 instead of crashing the instance
+- Scans are capped (max 3000 files, max 2MB per file, 300s scan budget)
 - Semgrep can be resource intensive
+
+Limits are configurable via `MAX_REPO_SIZE_MB`, `CLONE_TIMEOUT_SECONDS`, `MAX_SCAN_FILES`, `MAX_FILE_SIZE_MB` and `SCAN_TIME_BUDGET_SECONDS` environment variables.
 
 For production usage:
 - Upgrade to Render Starter plan
@@ -225,7 +228,6 @@ Private repositories require authentication integration.
 - PR auto-commenting
 - PDF report export
 - Severity score calculation
-- Repository size limiter
 - Async scanning
 
 ---

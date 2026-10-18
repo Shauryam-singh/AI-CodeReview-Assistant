@@ -1,8 +1,10 @@
 import os
+import time
 from app.services.existing.semgrep_service import run_semgrep, run_semgrep_targeted
 from app.services.existing.ast_service import scan_python_ast, scan_single_file_ast
 from app.services.existing.secret_service import scan_secrets, scan_single_file_secrets
 from app.services.existing.risk_service import infer_risk
+from app.services.limits import MAX_SCAN_FILES, budget_exceeded
 
 def count_files(path):
     total = 0
@@ -35,14 +37,24 @@ def scan_pr_changes(repo_path: str, changed_files: list):
 
 def scan_repository(path):
     issues = []
+    started = time.time()
 
     total_files_found = count_files(path)
 
     semgrep_issues = run_semgrep(path)
-    ast_issues = scan_python_ast(path)
-    secret_issues = scan_secrets(path)
-
     issues.extend(semgrep_issues)
+
+    ast_issues = []
+    if budget_exceeded(started):
+        print("Scan budget exceeded, skipping AST scan.")
+    else:
+        ast_issues = scan_python_ast(path)
+
+    secret_issues = []
+    if budget_exceeded(started):
+        print("Scan budget exceeded, skipping secret scan.")
+    else:
+        secret_issues = scan_secrets(path)
 
     for issue in ast_issues:
         issue["language"] = "python"
@@ -59,6 +71,6 @@ def scan_repository(path):
     return {
         "status": "success",
         "total_files_found": total_files_found,
-        "total_files_scanned": total_files_found,
+        "total_files_scanned": min(total_files_found, MAX_SCAN_FILES),
         "issues": issues
     }

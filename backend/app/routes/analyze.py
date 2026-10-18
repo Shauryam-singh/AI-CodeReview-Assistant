@@ -4,6 +4,7 @@ from app.models.schemas import RepoAnalyzeRequest
 from app.services.github.repo_service import clone_repo
 from app.services.context.context_builder import build_repo_context
 from app.services.existing.scan_service import scan_repository
+from app.services.limits import RepoTooLargeError
 
 router = APIRouter(prefix="/analyze")
 
@@ -37,6 +38,14 @@ def analyze_repo(data: RepoAnalyzeRequest):
             "semgrep": semgrep_results,
             "context": context
         }
+
+    except RepoTooLargeError as e:
+        print("REJECTED:", e)
+        raise HTTPException(status_code=413, detail=e.message)
+
+    except TimeoutError as e:
+        print("TIMEOUT:", e)
+        raise HTTPException(status_code=504, detail=str(e))
 
     except Exception as e:
         print("ERROR OCCURRED:", str(e))

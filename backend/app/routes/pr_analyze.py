@@ -3,6 +3,7 @@ import os
 import re
 from app.services.pipeline_service import run_pipeline
 from app.services.existing.scan_service import scan_pr_changes
+from app.services.limits import RepoTooLargeError
 
 router = APIRouter()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -50,6 +51,14 @@ def analyze_pr(pr_url: str):
             "total_files_found": len(changed_files),
             "total_files_scanned": len(changed_files)
         }
+
+    except RepoTooLargeError as e:
+        print("REJECTED:", e)
+        raise HTTPException(status_code=413, detail=e.message)
+
+    except TimeoutError as e:
+        print("TIMEOUT:", e)
+        raise HTTPException(status_code=504, detail=str(e))
 
     except Exception as e:
         print(f"CRITICAL ERROR: {str(e)}")
