@@ -4,6 +4,7 @@ import sys
 import json
 import functools
 from app.services.existing.risk_service import infer_risk
+from app.services.sandbox import sandboxed_run
 
 @functools.lru_cache(maxsize=1)
 def semgrep_available() -> bool:
@@ -12,7 +13,7 @@ def semgrep_available() -> bool:
     if sys.platform == "win32":
         return False
     try:
-        r = subprocess.run(["semgrep", "--version"], capture_output=True, timeout=15)
+        r = sandboxed_run(["semgrep", "--version"], timeout=15)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -30,18 +31,15 @@ def run_semgrep_targeted(repo_path, file_list):
         return []
 
     try:
-        process = subprocess.run(
+        process = sandboxed_run(
             [
                 "semgrep",
                 "--config", "auto",
                 "--json",
                 "--no-git-ignore",
             ] + target_files,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            timeout=300
+            timeout=300,
+            network=True,
         )
 
         if process.returncode not in [0, 1] or not process.stdout.strip():
@@ -74,7 +72,7 @@ def run_semgrep(path: str):
     if not semgrep_available():
         return []
     try:
-        process = subprocess.run(
+        process = sandboxed_run(
             [
                 "semgrep",
                 "--config", "auto",
@@ -82,11 +80,8 @@ def run_semgrep(path: str):
                 "--no-git-ignore",
                 path
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            timeout=600
+            timeout=600,
+            network=True,
         )
 
         # semgrep returns:

@@ -218,6 +218,12 @@ For production usage:
 This tool scans **public repositories only**.  
 Private repositories require authentication integration.
 
+Clone and scan subprocesses (`git`, `semgrep`) run sandboxed with resource
+limits (memory, file size, hard timeouts, process-tree kill). On Linux the
+limits are enforced via `prlimit`/`ulimit` and optionally a network namespace
+(`SANDBOX_NO_NETWORK=1`); on Windows via Job Objects — so it works both on
+Render and on a local PC.
+
 ---
 
 

@@ -11,6 +11,7 @@ from app.services.limits import (
     dir_size_mb,
     github_repo_size_mb,
 )
+from app.services.sandbox import sandboxed_run
 
 def _cleanup(path: str):
     # git for Windows marks pack files read-only; rmtree can't delete them
@@ -45,13 +46,10 @@ def clone_repo(repo_url: str):
         temp_dir = tempfile.mkdtemp(prefix="repo_")
         started = time.time()
         try:
-            process = subprocess.run(
+            process = sandboxed_run(
                 ["git", "clone", "--depth", "1", "--single-branch", "--", repo_url, temp_dir],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
                 timeout=CLONE_TIMEOUT_SECONDS,
+                network=True,
             )
             if process.returncode != 0:
                 raise RuntimeError(f"git clone failed: {(process.stderr or '').strip()[:300]}")
