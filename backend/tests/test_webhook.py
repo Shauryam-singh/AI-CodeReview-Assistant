@@ -53,31 +53,45 @@ def test_webhook_ping_returns_pong(monkeypatch):
     assert r.json() == {"status": "pong"}
 
 
-def test_webhook_pr_opened_schedules_scan(monkeypatch):
+def test_webhook_pr_opened_enqueues_scan(monkeypatch):
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
     payload = {
         "action": "opened",
         "pull_request": {"number": 5, "html_url": "https://github.com/a/b/pull/5"},
         "repository": {"full_name": "a/b"},
     }
-    with patch("app.routes.webhook.process_pr_event") as mock_scan:
+    with patch("app.routes.webhook.enqueue_pr_scan", return_value="job-123") as mock_enqueue:
         client = TestClient(app)
         r = _post(client, payload, event="pull_request")
-    assert r.status_code == 200
-    assert r.json()["status"] == "accepted"
+    assert r.status_code == 202
+    assert r.json()["status"] == "queued"
+    assert r.json()["job_id"] == "job-123"
     assert r.json()["action"] == "opened"
-    assert mock_scan.call_count == 1
+    assert mock_enqueue.call_count == 1
+
+
+def test_webhook_enqueue_failure_returns_503(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+    payload = {
+        "action": "opened",
+        "pull_request": {"number": 5},
+        "repository": {"full_name": "a/b"},
+    }
+    with patch("app.routes.webhook.enqueue_pr_scan", side_effect=ConnectionError("no redis")):
+        client = TestClient(app)
+        r = _post(client, payload, event="pull_request")
+    assert r.status_code == 503
 
 
 def test_webhook_pr_closed_is_ignored(monkeypatch):
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
     payload = {"action": "closed", "pull_request": {"number": 5}}
-    with patch("app.routes.webhook.process_pr_event") as mock_scan:
+    with patch("app.routes.webhook.enqueue_pr_scan") as mock_enqueue:
         client = TestClient(app)
         r = _post(client, payload, event="pull_request")
     assert r.status_code == 200
     assert r.json()["status"] == "ignored"
-    assert mock_scan.call_count == 0
+    assert mock_enqueue.call_count == 0
 
 
 def test_webhook_unknown_event_ignored(monkeypatch):

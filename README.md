@@ -47,6 +47,11 @@ https://ai-codereview-assistant.onrender.com
 - **Windows (PC)**: Job Objects with memory/process caps
 - Hard wall-clock timeout with process-**tree** kill on both platforms
 
+### 🤖 GitHub App Webhook + Job Queue
+- `POST /webhook/github` with `X-Hub-Signature-256` HMAC verification (constant-time)
+- PR events (`opened`/`synchronize`/`reopened`) are enqueued to **Redis via arq**; the endpoint returns `202` immediately
+- An `arq` worker runs the scan and posts findings as a PR comment using the GitHub App installation token
+
 ### 📊 Intelligent Risk Mapping
 Each issue includes:
 - File name
@@ -66,6 +71,8 @@ Each issue includes:
 - Python AST
 - Regex secret scanning
 - `subprocess` + OS sandbox (Job Objects / prlimit)
+- Redis + arq (webhook job queue)
+- PyJWT (GitHub App authentication)
 
 ## Frontend
 - React
@@ -245,10 +252,19 @@ POST /webhook/github
 Receives GitHub App events. Every request must carry a valid `X-Hub-Signature-256` (HMAC-SHA256 of the raw body with `GITHUB_WEBHOOK_SECRET`); invalid or missing signatures return `401`, and an unconfigured secret returns `503`.
 
 - `ping` → `{"status": "pong"}`
-- `pull_request` with action `opened` / `synchronize` / `reopened` → scan runs in the background and a findings comment is posted back to the PR (via the App installation token, falling back to `GITHUB_TOKEN`)
+- `pull_request` with action `opened` / `synchronize` / `reopened` → job enqueued to Redis (arq); responds `202` with a `job_id`. A worker picks it up, runs the scan, and posts a findings comment back to the PR (via the App installation token, falling back to `GITHUB_TOKEN`)
 - Other events → acknowledged and ignored
 
-The endpoint responds immediately; scanning happens after the response.
+The endpoint responds immediately; scanning happens in the worker. If Redis is unreachable the endpoint returns `503` (GitHub will retry the delivery).
+
+### Running the worker
+
+```
+cd backend
+arq app.worker.WorkerSettings
+```
+
+Requires a Redis server (`REDIS_URL`, default `redis://localhost:6379/0`). On Windows use Memurai or WSL; on macOS/Linux `redis-server` works out of the box.
 
 ### GitHub App registration (manual, once)
 
@@ -300,9 +316,10 @@ Limits are configurable via environment variables (see `.env.example`):
 | `MAX_FILE_SIZE_MB` | `2` | Skip files larger than this |
 | `SCAN_TIME_BUDGET_SECONDS` | `300` | Total wall-clock budget for all scanners |
 | `SANDBOX_MEMORY_MB` | `1024` | Memory cap for git/semgrep subprocesses |
-| `SANDBOX_MAX_PROCS` | `64` | Process cap for sandboxed subprocesses |
+| `SANDBOX_MAX_PROCS` | `256` | Process/thread cap for sandboxed subprocesses (RLIMIT_NPROC counts threads) |
 | `SANDBOX_NO_NETWORK` | `0` | Set `1` to block network in sandbox (Linux only) |
 | `GITHUB_TOKEN` | _(empty)_ | Optional; raises GitHub API rate limits |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis for the arq webhook job queue |
 
 For production usage:
 - Upgrade to Render Starter plan

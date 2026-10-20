@@ -3,9 +3,10 @@ import hmac
 import json
 import os
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
-from app.services.webhook_service import process_pr_event
+from app.services.queue import enqueue_pr_scan
 
 router = APIRouter()
 
@@ -20,7 +21,7 @@ def verify_signature(payload: bytes, signature_header: str, secret: str) -> bool
 
 
 @router.post("/webhook/github")
-async def github_webhook(request: Request, background_tasks: BackgroundTasks):
+async def github_webhook(request: Request):
     secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
     if not secret:
         raise HTTPException(
@@ -47,8 +48,23 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     if event == "pull_request":
         action = payload.get("action", "")
         if action in ("opened", "synchronize", "reopened"):
-            background_tasks.add_task(process_pr_event, payload)
-            return {"status": "accepted", "delivery": delivery_id, "action": action}
+            try:
+                job_id = await enqueue_pr_scan(payload)
+            except Exception as e:
+                print(f"WEBHOOK: enqueue failed: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Job queue unavailable. Start Redis and the arq worker.",
+                )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "job_id": job_id,
+                    "delivery": delivery_id,
+                    "action": action,
+                },
+            )
         return {"status": "ignored", "action": action}
 
     if event == "installation":
