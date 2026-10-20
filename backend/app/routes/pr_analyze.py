@@ -13,7 +13,7 @@ def parse_github_url(url: str):
     pattern = r"github\.com/([^/]+)/([^/]+)/pull/(\d+)"
     match = re.search(pattern, url)
     if not match:
-        raise ValueError("Invalid GitHub PR URL.")
+        raise HTTPException(status_code=400, detail="Invalid GitHub PR URL. Expected format: https://github.com/owner/repo/pull/<number>")
     return match.group(1), match.group(2), match.group(3)
 
 @router.get("/analyze-pr")
