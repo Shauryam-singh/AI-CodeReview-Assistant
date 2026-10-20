@@ -125,13 +125,14 @@ def test_build_review_comments_overflow_when_global_limit_reached():
 
 @patch("app.services.github.review_service.requests.post")
 def test_post_pr_review_payload_and_success(mock_post):
-    mock_post.return_value = MagicMock(status_code=201)
+    mock_post.return_value = MagicMock(status_code=201, json=lambda: {"id": 987})
     comments = [{"path": "app.py", "line": 11, "side": "RIGHT", "body": "hi"}]
 
-    ok, status = post_pr_review("a/b", 5, "tok", "summary", comments)
+    ok, status, github_id = post_pr_review("a/b", 5, "tok", "summary", comments)
 
     assert ok is True
     assert status == 201
+    assert github_id == 987
     url = mock_post.call_args.args[0]
     assert url == "https://api.github.com/repos/a/b/pulls/5"
     payload = mock_post.call_args.kwargs["json"]
@@ -145,14 +146,16 @@ def test_post_pr_review_payload_and_success(mock_post):
 @patch("app.services.github.review_service.requests.post")
 def test_post_pr_review_rejected_by_github(mock_post):
     mock_post.return_value = MagicMock(status_code=422, text="Unprocessable")
-    ok, status = post_pr_review("a/b", 5, "tok", "summary", [])
+    ok, status, github_id = post_pr_review("a/b", 5, "tok", "summary", [])
     assert ok is False
     assert status == 422
+    assert github_id is None
 
 
 @patch("app.services.github.review_service.requests.post",
        side_effect=requests.exceptions.ConnectionError("boom"))
 def test_post_pr_review_network_error(mock_post):
-    ok, status = post_pr_review("a/b", 5, "tok", "summary", [])
+    ok, status, github_id = post_pr_review("a/b", 5, "tok", "summary", [])
     assert ok is False
     assert status == 0
+    assert github_id is None

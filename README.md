@@ -73,6 +73,8 @@ Each issue includes:
 - `subprocess` + OS sandbox (Job Objects / prlimit)
 - Redis + arq (webhook job queue)
 - PyJWT (GitHub App authentication)
+- PostgreSQL + SQLAlchemy 2.0 (scan history: repos, PRs, jobs, findings, reviews)
+- Alembic (schema migrations)
 
 ## Frontend
 - React
@@ -286,6 +288,42 @@ GITHUB_APP_PRIVATE_KEY=<PEM contents, newlines escaped as \n>
 
 ---
 
+# 🗄 PostgreSQL + SQLAlchemy + Alembic
+
+Scan history is persisted to PostgreSQL with **SQLAlchemy 2.0** and migrated with **Alembic**. Persistence is **optional**: when `DATABASE_URL` is unset the app and webhook worker run exactly as before and recording is skipped (no-op).
+
+### Tables
+
+| Table | Purpose |
+|-------|---------|
+| `repos` | GitHub repositories seen by the webhook (unique `full_name`) |
+| `pull_requests` | PRs, unique per `(repo_id, number)`; title/state/sha captured from the webhook payload |
+| `jobs` | arq scan-job lifecycle: `queued → running → succeeded/failed/skipped`, with error text and timestamps |
+| `findings` | One row per scan issue (file, line, severity, tool, risk, suggestion, snippet); `inlined` marks findings that became an inline review comment |
+| `reviews` | Every review/comment posted back to GitHub: kind (`review`/`comment`), GitHub id, HTTP status, inline count, body |
+
+### Setup
+
+```bash
+cd backend
+pip install -r requirements.txt          # includes sqlalchemy, psycopg, alembic
+export DATABASE_URL=postgresql+psycopg://user:pass@host:5432/dbname
+alembic upgrade head                     # apply migrations
+```
+
+- Render-style `postgres://` URLs are normalized automatically (routed through psycopg 3)
+- `GET /health` reports `"database": true/false`
+- After changing models in `app/models/tables.py`:
+
+```bash
+alembic revision --autogenerate -m "describe change"
+alembic upgrade head
+```
+
+Recording is best-effort: a Postgres outage is logged but never breaks the scan or the webhook response.
+
+---
+
 # 🧠 How It Works
 
 1. Validate the repo URL against the GitHub allow-list
@@ -320,6 +358,7 @@ Limits are configurable via environment variables (see `.env.example`):
 | `SANDBOX_NO_NETWORK` | `0` | Set `1` to block network in sandbox (Linux only) |
 | `GITHUB_TOKEN` | _(empty)_ | Optional; raises GitHub API rate limits |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis for the arq webhook job queue |
+| `DATABASE_URL` | _(unset)_ | PostgreSQL URL; when set, scan history is persisted (see the PostgreSQL section) |
 
 For production usage:
 - Upgrade to Render Starter plan

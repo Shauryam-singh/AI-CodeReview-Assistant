@@ -7,3 +7,6 @@ semgrep; sys_platform != "win32"
 python-dotenv
 PyJWT[crypto]
 arq
+sqlalchemy>=2.0
+psycopg[binary]
+alembic

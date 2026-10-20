@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.services.queue import enqueue_pr_scan
+from app.services.recording import record_job_queued
 
 router = APIRouter()
 
@@ -56,6 +57,14 @@ async def github_webhook(request: Request):
                     status_code=503,
                     detail="Job queue unavailable. Start Redis and the arq worker.",
                 )
+            record_job_queued(
+                job_id,
+                payload.get("repository", {}).get("full_name", ""),
+                payload.get("pull_request", {}).get("number"),
+                action=action,
+                pr_info=payload.get("pull_request"),
+                repo_html_url=payload.get("repository", {}).get("html_url"),
+            )
             return JSONResponse(
                 status_code=202,
                 content={

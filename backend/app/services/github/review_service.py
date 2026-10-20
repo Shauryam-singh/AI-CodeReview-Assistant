@@ -62,8 +62,8 @@ def build_review_comments(issues: list, commentable_lines: dict, limit: int = MA
 def post_pr_review(repo_slug: str, pr_number, token: str, body: str, comments: list):
     """Create a COMMENT review with inline comments anchored to the diff.
 
-    Returns (ok, status_code). Falls back to a plain PR comment upstream
-    when GitHub rejects the review payload.
+    Returns (ok, status_code, github_review_id). Falls back to a plain PR
+    comment upstream when GitHub rejects the review payload.
     """
     url = f"https://api.github.com/repos/{repo_slug}/pulls/{pr_number}"
     headers = {
@@ -75,7 +75,12 @@ def post_pr_review(repo_slug: str, pr_number, token: str, body: str, comments: l
         r = requests.post(url, json=payload, headers=headers, timeout=20)
     except requests.RequestException as e:
         logger.error("Failed to post PR review: %s", e)
-        return False, 0
+        return False, 0, None
     if r.status_code != 201:
         logger.error("GitHub review error: %s - %s", r.status_code, r.text[:500])
-    return r.status_code == 201, r.status_code
+        return False, r.status_code, None
+    try:
+        github_id = r.json().get("id")
+    except ValueError:
+        github_id = None
+    return True, r.status_code, github_id

@@ -7,6 +7,17 @@ from app.services.github.app_auth import get_token_for_repo, AppAuthError
 from app.services.github.comment_service import post_pr_comment
 from app.services.github.review_service import build_review_comments, post_pr_review
 from app.services.limits import RepoTooLargeError
+from app.services.recording import (
+    KIND_COMMENT,
+    KIND_REVIEW,
+    STATUS_FAILED,
+    STATUS_SKIPPED,
+    STATUS_SUCCEEDED,
+    finish_job,
+    mark_job_running,
+    record_findings,
+    record_review,
+)
 from app.services.url_validator import validate_github_repo_url, InvalidRepoUrlError
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -42,7 +53,7 @@ def _get_token(repo_slug: str) -> str:
         return GITHUB_TOKEN
 
 
-def process_pr_event(payload: dict):
+def process_pr_event(payload: dict, job_id: str | None = None):
     repo = payload.get("repository", {})
     pr = payload.get("pull_request", {})
     repo_slug = repo.get("full_name", "")
@@ -50,9 +61,11 @@ def process_pr_event(payload: dict):
 
     if not repo_slug or not pr_number:
         print("WEBHOOK: missing repository or PR number in payload")
+        finish_job(job_id, STATUS_FAILED, "missing repository or PR number in payload")
         return
 
     print(f"WEBHOOK: scanning {repo_slug}#{pr_number} ...")
+    mark_job_running(job_id)
     try:
         validate_github_repo_url(f"https://github.com/{repo_slug}")
         repo_full_url = f"https://github.com/{repo_slug}.git"
@@ -64,6 +77,7 @@ def process_pr_event(payload: dict):
         changed_files = list(diff_dict.keys())
         if not changed_files:
             print(f"WEBHOOK: no changed files for {repo_slug}#{pr_number}")
+            finish_job(job_id, STATUS_SKIPPED, "no changed files in PR diff")
             return
 
         scan_results = scan_pr_changes(pipeline_data["repo_path"], changed_files)
@@ -74,33 +88,44 @@ def process_pr_event(payload: dict):
         commentable = parse_commentable_lines(context.get("diff_text", ""))
         inline, remaining = build_review_comments(issues, commentable)
 
+        record_findings(job_id, repo_slug, pr_number, issues, inline, pr_info=pr)
+
         # Post via App installation token, fall back to PAT
         token = _get_token(repo_slug)
         if not token:
             print(f"WEBHOOK: no token available to comment on {repo_slug}#{pr_number}")
+            finish_job(job_id, STATUS_SKIPPED, "no token available to post comments")
             return
 
         if inline:
             body = format_scan_comment(remaining, len(changed_files),
                                        inline_count=len(inline), total_issues=len(issues))
-            ok, status = post_pr_review(repo_slug, str(pr_number), token, body, inline)
+            ok, status, github_id = post_pr_review(repo_slug, str(pr_number), token, body, inline)
+            record_review(job_id, repo_slug, pr_number, KIND_REVIEW, status, body,
+                          inline_count=len(inline), pr_info=pr, github_id=github_id)
             if not ok:
                 print(f"WEBHOOK: review rejected ({status}), falling back to plain comment")
-                ok = post_pr_comment(
-                    repo_slug, str(pr_number), token,
-                    format_scan_comment(issues, len(changed_files)),
-                )
+                fallback = format_scan_comment(issues, len(changed_files))
+                ok = post_pr_comment(repo_slug, str(pr_number), token, fallback)
+                record_review(job_id, repo_slug, pr_number, KIND_COMMENT,
+                              201 if ok else None, fallback, pr_info=pr)
         else:
-            ok = post_pr_comment(
-                repo_slug, str(pr_number), token,
-                format_scan_comment(issues, len(changed_files)),
-            )
+            body = format_scan_comment(issues, len(changed_files))
+            ok = post_pr_comment(repo_slug, str(pr_number), token, body)
+            record_review(job_id, repo_slug, pr_number, KIND_COMMENT,
+                          201 if ok else None, body, pr_info=pr)
         print(
             f"WEBHOOK: posted={ok} inline={len(inline)} "
             f"listed={len(remaining)} for {repo_slug}#{pr_number}"
         )
+        if ok:
+            finish_job(job_id, STATUS_SUCCEEDED)
+        else:
+            finish_job(job_id, STATUS_FAILED, "failed to post comment to GitHub")
 
     except (RepoTooLargeError, InvalidRepoUrlError) as e:
         print(f"WEBHOOK: skipped {repo_slug}#{pr_number}: {e}")
+        finish_job(job_id, STATUS_SKIPPED, str(e))
     except Exception as e:
         print(f"WEBHOOK: scan failed for {repo_slug}#{pr_number}: {e}")
+        finish_job(job_id, STATUS_FAILED, str(e))

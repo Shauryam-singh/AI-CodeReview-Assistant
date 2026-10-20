@@ -86,4 +86,6 @@ def root():
 @app.get("/health")
 def health():
     from app.services.sandbox import SANDBOX_MAX_PROCS
-    return {"status": "ok", "sandbox_max_procs": SANDBOX_MAX_PROCS}
+    from app.db import db_enabled
+    return {"status": "ok", "sandbox_max_procs": SANDBOX_MAX_PROCS,
+            "database": db_enabled()}

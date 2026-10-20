@@ -7,7 +7,7 @@ from app.services.webhook_service import process_pr_event as _process_pr_event
 
 
 async def process_pr_event(ctx, payload: dict):
-    await asyncio.to_thread(_process_pr_event, payload)
+    await asyncio.to_thread(_process_pr_event, payload, ctx.get("job_id"))
 
 
 class WorkerSettings:

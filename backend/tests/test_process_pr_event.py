@@ -27,7 +27,7 @@ PIPELINE = {
 }
 
 
-def _run(issues, review_result=(True, 201), review_side_effect=None):
+def _run(issues, review_result=(True, 201, 987), review_side_effect=None):
     with patch("app.services.webhook_service.run_pipeline", return_value=PIPELINE), \
          patch("app.services.webhook_service.scan_pr_changes",
                return_value={"issues": issues, "total_files": 1}), \
@@ -63,7 +63,7 @@ def test_process_pr_event_posts_inline_review():
 def test_process_pr_event_falls_back_to_plain_comment_when_review_rejected():
     issues = [{"file": "app.py", "line": 11, "severity": "HIGH",
                "tool": "semgrep", "message": "bad call"}]
-    mock_review, mock_comment, _ = _run(issues, review_result=(False, 422))
+    mock_review, mock_comment, _ = _run(issues, review_result=(False, 422, None))
 
     assert mock_review.call_count == 1
     assert mock_comment.call_count == 1
