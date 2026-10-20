@@ -259,6 +259,13 @@ Receives GitHub App events. Every request must carry a valid `X-Hub-Signature-25
 
 The endpoint responds immediately; scanning happens in the worker. If Redis is unreachable the endpoint returns `503` (GitHub will retry the delivery).
 
+### Reliability: idempotency, retries, dead letters
+
+- **Idempotency** — duplicate deliveries (same `X-GitHub-Delivery` header) are deduplicated: the first delivery enqueues the job (using the delivery id as the arq job id, so even concurrent redeliveries collapse into one); later redeliveries get `200 {"status": "duplicate"}` and never re-scan.
+- **Retries** — transient failures (network errors/timeouts during clone, GitHub API `429`/`5xx`/network errors when posting the review) are retried with exponential backoff and ±20% jitter: `min(WEBHOOK_RETRY_BASE_SECONDS * 2^(n-1), WEBHOOK_RETRY_MAX_SECONDS)`. Permanent failures (bad payload, auth errors, oversized repos) stay one-shot `failed`/`skipped`.
+- **Dead letters** — once `WEBHOOK_MAX_TRIES` attempts are exhausted, the job is parked in the `dead_letter` state on the `jobs` table (with the last error and attempt count) instead of silently disappearing. Inspect with `SELECT * FROM jobs WHERE status = 'dead_letter';`.
+- Job lifecycle: `queued → running → succeeded | failed | skipped`, plus `running → retrying → running` on each retry and `retrying → dead_letter` when attempts are exhausted.
+
 ### Running the worker
 
 ```
@@ -298,7 +305,7 @@ Scan history is persisted to PostgreSQL with **SQLAlchemy 2.0** and migrated wit
 |-------|---------|
 | `repos` | GitHub repositories seen by the webhook (unique `full_name`) |
 | `pull_requests` | PRs, unique per `(repo_id, number)`; title/state/sha captured from the webhook payload |
-| `jobs` | arq scan-job lifecycle: `queued → running → succeeded/failed/skipped`, with error text and timestamps |
+| `jobs` | arq scan-job lifecycle: `queued → running → succeeded/failed/skipped`, plus `retrying`/`dead_letter` for retried and exhausted jobs; GitHub `delivery_id` (unique, dedupes redeliveries), attempt count, error text and timestamps |
 | `findings` | One row per scan issue (file, line, severity, tool, risk, suggestion, snippet); `inlined` marks findings that became an inline review comment |
 | `reviews` | Every review/comment posted back to GitHub: kind (`review`/`comment`), GitHub id, HTTP status, inline count, body |
 
@@ -358,6 +365,9 @@ Limits are configurable via environment variables (see `.env.example`):
 | `SANDBOX_NO_NETWORK` | `0` | Set `1` to block network in sandbox (Linux only) |
 | `GITHUB_TOKEN` | _(empty)_ | Optional; raises GitHub API rate limits |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis for the arq webhook job queue |
+| `WEBHOOK_MAX_TRIES` | `5` | Attempts per webhook job before it is dead-lettered |
+| `WEBHOOK_RETRY_BASE_SECONDS` | `30` | Base delay for exponential retry backoff |
+| `WEBHOOK_RETRY_MAX_SECONDS` | `3600` | Cap for the retry backoff delay |
 | `DATABASE_URL` | _(unset)_ | PostgreSQL URL; when set, scan history is persisted (see the PostgreSQL section) |
 
 For production usage:

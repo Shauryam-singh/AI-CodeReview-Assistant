@@ -68,6 +68,63 @@ def test_webhook_pr_opened_enqueues_scan(monkeypatch):
     assert r.json()["job_id"] == "job-123"
     assert r.json()["action"] == "opened"
     assert mock_enqueue.call_count == 1
+    # delivery id doubles as the arq job id so arq dedupes redeliveries
+    assert mock_enqueue.call_args.kwargs["job_id"] == "abc-123"
+
+
+def test_webhook_duplicate_delivery_is_rejected_before_enqueue(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+    payload = {
+        "action": "opened",
+        "pull_request": {"number": 5},
+        "repository": {"full_name": "a/b"},
+    }
+    with patch("app.routes.webhook.is_duplicate_delivery", return_value=True), \
+         patch("app.routes.webhook.enqueue_pr_scan") as mock_enqueue:
+        client = TestClient(app)
+        r = _post(client, payload, event="pull_request", delivery="dup-1")
+    assert r.status_code == 200
+    assert r.json()["status"] == "duplicate"
+    assert r.json()["delivery"] == "dup-1"
+    assert mock_enqueue.call_count == 0
+
+
+def test_webhook_enqueue_dedupe_returns_duplicate(monkeypatch):
+    """arq returns None when a job with this id already exists (lost race)."""
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+    payload = {
+        "action": "opened",
+        "pull_request": {"number": 5},
+        "repository": {"full_name": "a/b"},
+    }
+    with patch("app.routes.webhook.enqueue_pr_scan", return_value=None):
+        client = TestClient(app)
+        r = _post(client, payload, event="pull_request")
+    assert r.status_code == 200
+    assert r.json()["status"] == "duplicate"
+
+
+def test_webhook_missing_delivery_header_skips_dedupe(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+    payload = {
+        "action": "opened",
+        "pull_request": {"number": 5},
+        "repository": {"full_name": "a/b"},
+    }
+    with patch("app.routes.webhook.enqueue_pr_scan", return_value="job-1") as mock_enqueue, \
+         patch("app.routes.webhook.is_duplicate_delivery") as mock_dupe:
+        client = TestClient(app)
+        r = client.post(
+            "/webhook/github",
+            content=json.dumps(payload).encode(),
+            headers={
+                "X-GitHub-Event": "pull_request",
+                "X-Hub-Signature-256": _sign(json.dumps(payload).encode()),
+            },
+        )
+    assert r.status_code == 202
+    assert mock_dupe.call_count == 0
+    assert mock_enqueue.call_args.kwargs["job_id"] is None
 
 
 def test_webhook_enqueue_failure_returns_503(monkeypatch):

@@ -1,5 +1,8 @@
 from unittest.mock import patch
 
+import requests
+
+from app.services.errors import RetryableScanError
 from app.services.webhook_service import format_scan_comment, process_pr_event
 
 DIFF = """\
@@ -98,6 +101,86 @@ def test_process_pr_event_missing_pr_number_is_noop():
     with patch("app.services.webhook_service.run_pipeline") as mock_pipeline:
         process_pr_event({"repository": {"full_name": "a/b"}})
     assert mock_pipeline.call_count == 0
+
+
+def test_process_pr_event_retries_on_transient_review_status():
+    """5xx/429 from the review API must raise RetryableScanError, not fall back."""
+    issues = [{"file": "app.py", "line": 11, "severity": "HIGH",
+               "tool": "semgrep", "message": "bad call"}]
+    with patch("app.services.webhook_service.run_pipeline", return_value=PIPELINE), \
+         patch("app.services.webhook_service.scan_pr_changes",
+               return_value={"issues": issues, "total_files": 1}), \
+         patch("app.services.webhook_service.get_token_for_repo", return_value="tok"), \
+         patch("app.services.webhook_service.post_pr_review",
+               return_value=(False, 502, None)) as mock_review, \
+         patch("app.services.webhook_service.post_pr_comment") as mock_comment:
+        try:
+            process_pr_event(PAYLOAD)
+            raise AssertionError("expected RetryableScanError")
+        except RetryableScanError as e:
+            assert "502" in str(e)
+    assert mock_review.call_count == 1
+    assert mock_comment.call_count == 0  # no fallback on transient status
+
+
+def test_process_pr_event_retries_on_review_network_error():
+    issues = [{"file": "app.py", "line": 11, "severity": "HIGH",
+               "tool": "semgrep", "message": "bad call"}]
+    with patch("app.services.webhook_service.run_pipeline", return_value=PIPELINE), \
+         patch("app.services.webhook_service.scan_pr_changes",
+               return_value={"issues": issues, "total_files": 1}), \
+         patch("app.services.webhook_service.get_token_for_repo", return_value="tok"), \
+         patch("app.services.webhook_service.post_pr_review",
+               return_value=(False, 0, None)):
+        try:
+            process_pr_event(PAYLOAD)
+            raise AssertionError("expected RetryableScanError")
+        except RetryableScanError:
+            pass
+
+
+def test_process_pr_event_retries_on_clone_timeout():
+    with patch("app.services.webhook_service.run_pipeline",
+               side_effect=TimeoutError("Clone timed out after 120s.")):
+        try:
+            process_pr_event(PAYLOAD)
+            raise AssertionError("expected RetryableScanError")
+        except RetryableScanError as e:
+            assert "timed out" in str(e)
+
+
+def test_process_pr_event_retries_on_transient_clone_runtimeerror():
+    with patch("app.services.webhook_service.run_pipeline",
+               side_effect=RuntimeError(
+                   "git clone failed: fatal: Could not resolve host: github.com")):
+        try:
+            process_pr_event(PAYLOAD)
+            raise AssertionError("expected RetryableScanError")
+        except RetryableScanError:
+            pass
+
+
+def test_process_pr_event_permanent_clone_error_does_not_retry():
+    with patch("app.services.webhook_service.run_pipeline",
+               side_effect=RuntimeError(
+                   "git clone failed: Repository not found")):
+        process_pr_event(PAYLOAD)  # must not raise
+
+
+def test_process_pr_event_retries_on_comment_network_error():
+    issues = [{"file": "app.py", "line": 999, "severity": "LOW",
+               "tool": "python-ast", "message": "elsewhere"}]
+    with patch("app.services.webhook_service.run_pipeline", return_value=PIPELINE), \
+         patch("app.services.webhook_service.scan_pr_changes",
+               return_value={"issues": issues, "total_files": 1}), \
+         patch("app.services.webhook_service.get_token_for_repo", return_value="tok"), \
+         patch("app.services.webhook_service.post_pr_comment",
+               side_effect=requests.ConnectionError("connection refused")):
+        try:
+            process_pr_event(PAYLOAD)
+            raise AssertionError("expected RetryableScanError")
+        except RetryableScanError:
+            pass
 
 
 def test_format_scan_comment_all_inline():

@@ -14,7 +14,13 @@ async def get_pool() -> ArqRedis:
     return _pool
 
 
-async def enqueue_pr_scan(payload: dict) -> str | None:
+async def enqueue_pr_scan(payload: dict, job_id: str | None = None) -> str | None:
+    """Enqueue a PR scan.
+
+    When ``job_id`` is given it is used as the arq job id, so re-enqueueing
+    the same id (e.g. a GitHub delivery redelivery) is a no-op and returns
+    None instead of creating a duplicate job.
+    """
     pool = await get_pool()
-    job = await pool.enqueue_job("process_pr_event", payload)
+    job = await pool.enqueue_job("process_pr_event", payload, _job_id=job_id)
     return job.job_id if job else None

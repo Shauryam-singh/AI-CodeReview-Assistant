@@ -14,9 +14,11 @@ logger = logging.getLogger(__name__)
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
+STATUS_RETRYING = "retrying"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+STATUS_DEAD_LETTER = "dead_letter"
 
 KIND_REVIEW = "review"
 KIND_COMMENT = "comment"
@@ -67,7 +69,8 @@ def _resolve(session, repo_slug: str, pr_number, pr_info: dict | None = None):
 
 def record_job_queued(arq_job_id: str | None, repo_slug: str, pr_number,
                       action: str | None = None, pr_info: dict | None = None,
-                      repo_html_url: str | None = None) -> None:
+                      repo_html_url: str | None = None,
+                      delivery_id: str | None = None) -> None:
     if not db_enabled() or not arq_job_id:
         return
     try:
@@ -79,6 +82,7 @@ def record_job_queued(arq_job_id: str | None, repo_slug: str, pr_number,
             if existing is None:
                 session.add(Job(
                     arq_job_id=arq_job_id,
+                    delivery_id=delivery_id or None,
                     repo_id=repo.id,
                     pull_request_id=pr.id,
                     action=action,
@@ -88,17 +92,50 @@ def record_job_queued(arq_job_id: str | None, repo_slug: str, pr_number,
         logger.exception("record_job_queued failed: %s", e)
 
 
+def is_duplicate_delivery(delivery_id: str | None) -> bool:
+    """True when a job was already recorded for this GitHub delivery id."""
+    if not db_enabled() or not delivery_id:
+        return False
+    try:
+        with session_scope() as session:
+            existing = (
+                session.query(Job).filter_by(delivery_id=delivery_id).first()
+            )
+            return existing is not None
+    except Exception as e:
+        logger.exception("is_duplicate_delivery failed: %s", e)
+        return False
+
+
 def mark_job_running(arq_job_id: str | None) -> None:
     if not db_enabled() or not arq_job_id:
         return
     try:
         with session_scope() as session:
             job = session.query(Job).filter_by(arq_job_id=arq_job_id).one_or_none()
-            if job is not None and job.status == STATUS_QUEUED:
+            if job is not None and job.status in (STATUS_QUEUED, STATUS_RETRYING):
                 job.status = STATUS_RUNNING
-                job.started_at = _now()
+                if job.started_at is None:
+                    job.started_at = _now()
     except Exception as e:
         logger.exception("mark_job_running failed: %s", e)
+
+
+def record_job_retry(arq_job_id: str | None, attempt: int,
+                     error: str | None = None) -> None:
+    """Mark a job as waiting for its next retry (transient failure)."""
+    if not db_enabled() or not arq_job_id:
+        return
+    try:
+        with session_scope() as session:
+            job = session.query(Job).filter_by(arq_job_id=arq_job_id).one_or_none()
+            if job is None:
+                return
+            job.status = STATUS_RETRYING
+            job.attempts = attempt
+            job.error = (str(error)[:4000] if error else None)
+    except Exception as e:
+        logger.exception("record_job_retry failed: %s", e)
 
 
 def finish_job(arq_job_id: str | None, status: str, error: str | None = None) -> None:

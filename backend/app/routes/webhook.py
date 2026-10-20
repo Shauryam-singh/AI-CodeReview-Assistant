@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.services.queue import enqueue_pr_scan
-from app.services.recording import record_job_queued
+from app.services.recording import is_duplicate_delivery, record_job_queued
 
 router = APIRouter()
 
@@ -49,13 +49,33 @@ async def github_webhook(request: Request):
     if event == "pull_request":
         action = payload.get("action", "")
         if action in ("opened", "synchronize", "reopened"):
+            if delivery_id and is_duplicate_delivery(delivery_id):
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "duplicate",
+                        "delivery": delivery_id,
+                        "action": action,
+                    },
+                )
             try:
-                job_id = await enqueue_pr_scan(payload)
+                job_id = await enqueue_pr_scan(payload, job_id=delivery_id or None)
             except Exception as e:
                 print(f"WEBHOOK: enqueue failed: {e}")
                 raise HTTPException(
                     status_code=503,
                     detail="Job queue unavailable. Start Redis and the arq worker.",
+                )
+            if job_id is None:
+                # arq already has a job with this id: a concurrent duplicate
+                # delivery won the race (or the result is still retained).
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "duplicate",
+                        "delivery": delivery_id,
+                        "action": action,
+                    },
                 )
             record_job_queued(
                 job_id,
@@ -64,6 +84,7 @@ async def github_webhook(request: Request):
                 action=action,
                 pr_info=payload.get("pull_request"),
                 repo_html_url=payload.get("repository", {}).get("html_url"),
+                delivery_id=delivery_id or None,
             )
             return JSONResponse(
                 status_code=202,

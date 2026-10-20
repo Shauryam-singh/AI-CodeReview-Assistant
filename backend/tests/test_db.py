@@ -17,15 +17,19 @@ from app.main import app
 from app.models.tables import Finding, Job, PullRequest, Repo, Review
 from app.services.recording import (
     KIND_REVIEW,
+    STATUS_DEAD_LETTER,
     STATUS_QUEUED,
+    STATUS_RETRYING,
     STATUS_RUNNING,
     STATUS_SKIPPED,
     STATUS_SUCCEEDED,
     STATUS_FAILED,
     finish_job,
+    is_duplicate_delivery,
     mark_job_running,
     record_findings,
     record_job_queued,
+    record_job_retry,
     record_review,
 )
 from app.services.webhook_service import process_pr_event
@@ -279,3 +283,81 @@ def test_process_pr_event_records_skipped_when_no_changed_files(db):
         job = s.query(Job).one()
         assert job.status == STATUS_SKIPPED
         assert "no changed files" in job.error
+
+
+def test_record_job_queued_stores_delivery_id(db):
+    record_job_queued("job-10", "a/b", 5, action="opened", delivery_id="deliv-1")
+    with session_scope() as s:
+        job = s.query(Job).one()
+        assert job.delivery_id == "deliv-1"
+        assert job.attempts == 1
+
+
+def test_is_duplicate_delivery(db):
+    assert is_duplicate_delivery("nope") is False
+    assert is_duplicate_delivery(None) is False
+    record_job_queued("job-11", "a/b", 5, action="opened", delivery_id="deliv-2")
+    assert is_duplicate_delivery("deliv-2") is True
+    assert is_duplicate_delivery("deliv-3") is False
+
+
+def test_job_retry_lifecycle(db):
+    record_job_queued("job-12", "a/b", 7, action="opened")
+    mark_job_running("job-12")
+    with session_scope() as s:
+        started = s.query(Job).one().started_at
+        assert started is not None
+
+    record_job_retry("job-12", 2, "GitHub review post failed with status 502")
+    with session_scope() as s:
+        job = s.query(Job).one()
+        assert job.status == STATUS_RETRYING
+        assert job.attempts == 2
+        assert "502" in job.error
+        assert job.finished_at is None
+
+    # a retried job goes back to running, keeping its original start time
+    mark_job_running("job-12")
+    with session_scope() as s:
+        job = s.query(Job).one()
+        assert job.status == STATUS_RUNNING
+        assert job.started_at == started
+
+    finish_job("job-12", STATUS_SUCCEEDED)
+    with session_scope() as s:
+        job = s.query(Job).one()
+        assert job.status == STATUS_SUCCEEDED
+
+
+def test_job_dead_letter_state(db):
+    record_job_queued("job-13", "a/b", 7, action="opened")
+    record_job_retry("job-13", 5, "Clone timed out after 120s.")
+    finish_job("job-13", STATUS_DEAD_LETTER, "Clone timed out after 120s.")
+    with session_scope() as s:
+        job = s.query(Job).one()
+        assert job.status == STATUS_DEAD_LETTER
+        assert job.attempts == 5
+        assert "timed out" in job.error
+        assert job.finished_at is not None
+
+
+def test_webhook_redelivery_is_deduped_end_to_end(db, monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+    body = json.dumps(PAYLOAD).encode()
+    headers = {
+        "X-GitHub-Event": "pull_request",
+        "X-GitHub-Delivery": "same-delivery",
+        "X-Hub-Signature-256": "sha256=" + hmac.new(
+            SECRET.encode(), body, hashlib.sha256).hexdigest(),
+    }
+    with patch("app.routes.webhook.enqueue_pr_scan", return_value="job-dup"):
+        client = TestClient(app)
+        r1 = client.post("/webhook/github", content=body, headers=headers)
+        r2 = client.post("/webhook/github", content=body, headers=headers)
+
+    assert r1.status_code == 202
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "duplicate"
+    with session_scope() as s:
+        assert s.query(Job).count() == 1
+        assert s.query(Job).one().delivery_id == "same-delivery"

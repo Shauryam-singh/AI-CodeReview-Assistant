@@ -60,6 +60,8 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     arq_job_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # GitHub X-GitHub-Delivery header; unique so redeliveries are deduped.
+    delivery_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     repo_id: Mapped[int | None] = mapped_column(
         ForeignKey("repos.id", ondelete="CASCADE"), index=True
     )
@@ -69,6 +71,11 @@ class Job(Base):
     action: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="queued", server_default="queued"
+    )
+    # "queued" | "running" | "retrying" | "succeeded" | "failed" | "skipped"
+    # | "dead_letter"
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
     )
     error: Mapped[str | None] = mapped_column(Text)
     enqueued_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

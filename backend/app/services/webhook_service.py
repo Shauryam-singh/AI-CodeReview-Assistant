@@ -1,8 +1,11 @@
 import os
 
+import requests
+
 from app.services.pipeline_service import run_pipeline
 from app.services.existing.scan_service import scan_pr_changes
 from app.services.context.diff_parser import parse_commentable_lines
+from app.services.errors import RetryableScanError
 from app.services.github.app_auth import get_token_for_repo, AppAuthError
 from app.services.github.comment_service import post_pr_comment
 from app.services.github.review_service import build_review_comments, post_pr_review
@@ -21,6 +24,36 @@ from app.services.recording import (
 from app.services.url_validator import validate_github_repo_url, InvalidRepoUrlError
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+
+# git/network failure signatures worth retrying (clone failures surface as
+# RuntimeError with git's stderr, not as ConnectionError).
+_TRANSIENT_MARKERS = (
+    "could not resolve host",
+    "unable to access",
+    "connection refused",
+    "connection timed out",
+    "connection reset",
+    "network is unreachable",
+    "no route to host",
+    "failed to connect",
+    "operation timed out",
+    "early eof",
+    "rpc failed",
+    "gnutls",
+    "ssl connection",
+    "tls handshake",
+    "temporary failure in name resolution",
+)
+
+
+def _looks_transient(message: str) -> bool:
+    s = (message or "").lower()
+    return any(marker in s for marker in _TRANSIENT_MARKERS)
+
+
+def _is_transient_github_status(status: int | None) -> bool:
+    """GitHub API statuses worth retrying: network error (0), 429, 5xx."""
+    return status == 0 or status == 429 or (status is not None and status >= 500)
 
 
 def format_scan_comment(issues: list, total_files: int, inline_count: int = 0,
@@ -70,7 +103,18 @@ def process_pr_event(payload: dict, job_id: str | None = None):
         validate_github_repo_url(f"https://github.com/{repo_slug}")
         repo_full_url = f"https://github.com/{repo_slug}.git"
 
-        pipeline_data = run_pipeline(repo_full_url, repo_slug, str(pr_number), GITHUB_TOKEN)
+        try:
+            pipeline_data = run_pipeline(repo_full_url, repo_slug, str(pr_number), GITHUB_TOKEN)
+        except (RepoTooLargeError, InvalidRepoUrlError, RetryableScanError):
+            raise
+        except (TimeoutError, ConnectionError, OSError) as e:
+            raise RetryableScanError(str(e)) from e
+        except RuntimeError as e:
+            # git clone failures are raised as RuntimeError with stderr text;
+            # retry only when the message looks like a network problem.
+            if _looks_transient(str(e)):
+                raise RetryableScanError(str(e)) from e
+            raise
 
         context = pipeline_data.get("context", {})
         diff_dict = context.get("diff", {})
@@ -104,14 +148,21 @@ def process_pr_event(payload: dict, job_id: str | None = None):
             record_review(job_id, repo_slug, pr_number, KIND_REVIEW, status, body,
                           inline_count=len(inline), pr_info=pr, github_id=github_id)
             if not ok:
+                if _is_transient_github_status(status):
+                    # Rate limit / server error / network: retry the whole job
+                    # rather than falling back (the fallback would likely fail
+                    # the same way and burn the delivery for good).
+                    raise RetryableScanError(
+                        f"GitHub review post failed with status {status}"
+                    )
                 print(f"WEBHOOK: review rejected ({status}), falling back to plain comment")
                 fallback = format_scan_comment(issues, len(changed_files))
-                ok = post_pr_comment(repo_slug, str(pr_number), token, fallback)
+                ok = _post_comment_or_raise(repo_slug, pr_number, token, fallback)
                 record_review(job_id, repo_slug, pr_number, KIND_COMMENT,
                               201 if ok else None, fallback, pr_info=pr)
         else:
             body = format_scan_comment(issues, len(changed_files))
-            ok = post_pr_comment(repo_slug, str(pr_number), token, body)
+            ok = _post_comment_or_raise(repo_slug, pr_number, token, body)
             record_review(job_id, repo_slug, pr_number, KIND_COMMENT,
                           201 if ok else None, body, pr_info=pr)
         print(
@@ -123,9 +174,21 @@ def process_pr_event(payload: dict, job_id: str | None = None):
         else:
             finish_job(job_id, STATUS_FAILED, "failed to post comment to GitHub")
 
+    except RetryableScanError:
+        # Propagate to the arq worker, which retries with backoff (and
+        # dead-letters the job once the attempts are exhausted).
+        raise
     except (RepoTooLargeError, InvalidRepoUrlError) as e:
         print(f"WEBHOOK: skipped {repo_slug}#{pr_number}: {e}")
         finish_job(job_id, STATUS_SKIPPED, str(e))
     except Exception as e:
         print(f"WEBHOOK: scan failed for {repo_slug}#{pr_number}: {e}")
         finish_job(job_id, STATUS_FAILED, str(e))
+
+
+def _post_comment_or_raise(repo_slug: str, pr_number, token: str, body: str) -> bool:
+    """Plain PR comment; network errors become RetryableScanError."""
+    try:
+        return post_pr_comment(repo_slug, str(pr_number), token, body)
+    except requests.RequestException as e:
+        raise RetryableScanError(f"GitHub comment post failed: {e}") from e
