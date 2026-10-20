@@ -13,6 +13,23 @@ from app.services.limits import (
 )
 from app.services.sandbox import sandboxed_run
 
+_FORK_ERROR_MARKERS = (
+    "cannot fork",
+    "resource temporarily unavailable",
+    "fork: ",
+    "unable to fork",
+    "posix_spawn",
+    "vfork",
+)
+
+
+def _is_fork_error(stderr: str) -> bool:
+    """True when git failed because the OS refused to create a new process
+    (RLIMIT_NPROC, cgroup pids.max, or memory pressure) — not a git error."""
+    s = (stderr or "").lower()
+    return any(marker in s for marker in _FORK_ERROR_MARKERS)
+
+
 def _cleanup(path: str):
     # git for Windows marks pack files read-only; rmtree can't delete them
     # unless the attribute is cleared first. Killed clones may also briefly
@@ -46,11 +63,26 @@ def clone_repo(repo_url: str):
         temp_dir = tempfile.mkdtemp(prefix="repo_")
         started = time.time()
         try:
+            clone_cmd = ["git", "clone", "--depth", "1", "--single-branch", "--", repo_url, temp_dir]
             process = sandboxed_run(
-                ["git", "clone", "--depth", "1", "--single-branch", "--", repo_url, temp_dir],
+                clone_cmd,
                 timeout=CLONE_TIMEOUT_SECONDS,
                 network=True,
             )
+            if process.returncode != 0 and _is_fork_error(process.stderr):
+                # The container refused a fork (cgroup pids / RLIMIT_NPROC /
+                # memory). Retry once without resource caps — timeout and
+                # tree-kill still apply, so this is not an unbounded risk.
+                print(
+                    "CLONE: sandbox hit a fork error; retrying without resource limits:",
+                    (process.stderr or "").strip()[:200],
+                )
+                process = sandboxed_run(
+                    clone_cmd,
+                    timeout=CLONE_TIMEOUT_SECONDS,
+                    network=True,
+                    limits=False,
+                )
             if process.returncode != 0:
                 raise RuntimeError(f"git clone failed: {(process.stderr or '').strip()[:300]}")
         except subprocess.TimeoutExpired:

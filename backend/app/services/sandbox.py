@@ -139,13 +139,15 @@ def _build_linux_wrapper(cmd, network=True):
     return wrapped
 
 
-def sandboxed_run(cmd, timeout, cwd=None, network=True):
+def sandboxed_run(cmd, timeout, cwd=None, network=True, limits=True):
     """Run cmd with resource limits + hard timeout, killing the whole tree.
 
     - Linux (Render): prlimit/sh ulimit caps for memory, file size, procs;
       optional network namespace when SANDBOX_NO_NETWORK=1 or network=False.
     - Windows: Job Object memory/process caps + taskkill tree-kill.
     - Always: wall-clock timeout with process-tree kill.
+    - limits=False: skip the memory/process caps (timeout + tree-kill still
+      apply) — used as a retry path when the container itself refuses forks.
     """
     cmd = [str(c) for c in cmd]
     posix_group = False
@@ -154,7 +156,13 @@ def sandboxed_run(cmd, timeout, cwd=None, network=True):
         final_cmd = cmd
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
-        final_cmd = _build_linux_wrapper(cmd, network=network)
+        if limits:
+            final_cmd = _build_linux_wrapper(cmd, network=network)
+        else:
+            # No prlimit/ulimit, but keep network isolation if requested.
+            final_cmd = list(cmd)
+            if (not network or SANDBOX_NO_NETWORK) and shutil.which("unshare"):
+                final_cmd = ["unshare", "--net", "--"] + final_cmd
         posix_group = True
         creationflags = 0
 
@@ -171,7 +179,7 @@ def sandboxed_run(cmd, timeout, cwd=None, network=True):
         creationflags=creationflags,
     )
 
-    if sys.platform == "win32":
+    if sys.platform == "win32" and limits:
         _windows_job_object(popen, SANDBOX_MEMORY_MB, SANDBOX_MAX_PROCS)
 
     proc = SandboxedProcess(popen, posix_group=posix_group)

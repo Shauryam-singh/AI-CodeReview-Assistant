@@ -14,6 +14,14 @@ def test_root_endpoint():
     assert r.json() == {"status": "running"}
 
 
+def test_health_endpoint():
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["sandbox_max_procs"], int)
+
+
 def test_analyze_rejects_non_github_url():
     r = client.post("/analyze/", json={"repo_url": "https://evil.com/owner/repo"})
     assert r.status_code == 400
