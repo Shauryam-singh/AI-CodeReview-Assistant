@@ -31,6 +31,7 @@ def build_repo_context(repo_path, diff_text, commits):
     """Combines all PR data into a single context object."""
     return {
         "diff": parse_diff(diff_text),
+        "diff_text": diff_text or "",
         "commits": commits,
         "repo_path": repo_path
     }

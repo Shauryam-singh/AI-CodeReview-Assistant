@@ -50,7 +50,7 @@ https://ai-codereview-assistant.onrender.com
 ### 🤖 GitHub App Webhook + Job Queue
 - `POST /webhook/github` with `X-Hub-Signature-256` HMAC verification (constant-time)
 - PR events (`opened`/`synchronize`/`reopened`) are enqueued to **Redis via arq**; the endpoint returns `202` immediately
-- An `arq` worker runs the scan and posts findings as a PR comment using the GitHub App installation token
+- An `arq` worker fetches the PR diff from the GitHub API, scans **only the changed files**, and posts the findings as an **inline PR review** (one comment per issue, anchored to the exact diff line) using the GitHub App installation token. Issues on lines outside the diff are listed in the review summary; if the review is rejected, it falls back to a single plain PR comment
 
 ### 📊 Intelligent Risk Mapping
 Each issue includes:
@@ -252,7 +252,7 @@ POST /webhook/github
 Receives GitHub App events. Every request must carry a valid `X-Hub-Signature-256` (HMAC-SHA256 of the raw body with `GITHUB_WEBHOOK_SECRET`); invalid or missing signatures return `401`, and an unconfigured secret returns `503`.
 
 - `ping` → `{"status": "pong"}`
-- `pull_request` with action `opened` / `synchronize` / `reopened` → job enqueued to Redis (arq); responds `202` with a `job_id`. A worker picks it up, runs the scan, and posts a findings comment back to the PR (via the App installation token, falling back to `GITHUB_TOKEN`)
+- `pull_request` with action `opened` / `synchronize` / `reopened` → job enqueued to Redis (arq); responds `202` with a `job_id`. A worker picks it up, fetches the PR diff via the GitHub API (`Accept: application/vnd.github.v3.diff`), scans only the changed files, and posts a `COMMENT` review with inline comments on the exact diff lines (plus a summary listing anything that could not be anchored). Auth uses the App installation token, falling back to `GITHUB_TOKEN`; if the review API rejects the payload the worker falls back to a plain PR comment
 - Other events → acknowledged and ignored
 
 The endpoint responds immediately; scanning happens in the worker. If Redis is unreachable the endpoint returns `503` (GitHub will retry the delivery).
