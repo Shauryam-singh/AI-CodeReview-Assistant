@@ -5,7 +5,9 @@ import sys
 import shutil
 
 SANDBOX_MEMORY_MB = int(os.getenv("SANDBOX_MEMORY_MB", "1024"))
-SANDBOX_MAX_PROCS = int(os.getenv("SANDBOX_MAX_PROCS", "64"))
+# RLIMIT_NPROC counts threads too (Linux), and FastAPI's threadpool alone
+# defaults to 40 — 64 was too low and made git unable to fork remote helpers.
+SANDBOX_MAX_PROCS = int(os.getenv("SANDBOX_MAX_PROCS", "256"))
 SANDBOX_NO_NETWORK = os.getenv("SANDBOX_NO_NETWORK", "0") == "1"
 
 
