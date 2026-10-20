@@ -5,3 +5,4 @@ requests
 pydantic
 semgrep; sys_platform != "win32"
 python-dotenv
+PyJWT[crypto]

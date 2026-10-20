@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import analyze, pr_analyze
+from app.routes import analyze, pr_analyze, webhook
 import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
@@ -21,6 +21,7 @@ app.add_middleware(
 
 app.include_router(analyze.router)
 app.include_router(pr_analyze.router)
+app.include_router(webhook.router)
 
 @app.get("/")
 def root():

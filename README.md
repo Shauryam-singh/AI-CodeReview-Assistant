@@ -236,6 +236,40 @@ Scans **only the files changed in the PR**. Returns `400` for invalid PR URLs, `
 
 ---
 
+## GitHub App Webhook
+
+```
+POST /webhook/github
+```
+
+Receives GitHub App events. Every request must carry a valid `X-Hub-Signature-256` (HMAC-SHA256 of the raw body with `GITHUB_WEBHOOK_SECRET`); invalid or missing signatures return `401`, and an unconfigured secret returns `503`.
+
+- `ping` → `{"status": "pong"}`
+- `pull_request` with action `opened` / `synchronize` / `reopened` → scan runs in the background and a findings comment is posted back to the PR (via the App installation token, falling back to `GITHUB_TOKEN`)
+- Other events → acknowledged and ignored
+
+The endpoint responds immediately; scanning happens after the response.
+
+### GitHub App registration (manual, once)
+
+1. Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**
+2. Set **Webhook URL** to `https://<your-backend-host>/webhook/github`
+3. Set **Webhook secret** to a strong random value: `python -c "import secrets; print(secrets.token_hex(32))"`
+4. Grant repository permissions: **Contents: Read-only**, **Pull requests: Read & write** (to post comments), **Metadata: Read-only**
+5. Subscribe to events: **Pull requests**
+6. Create the app, note the **App ID**
+7. Under **Generate a private key**, download the `.pem` file
+8. Install the app on the target repositories
+9. Configure backend env vars (see `backend/.env.example`):
+
+```
+GITHUB_WEBHOOK_SECRET=<same secret as step 3>
+GITHUB_APP_ID=<App ID from step 6>
+GITHUB_APP_PRIVATE_KEY=<PEM contents, newlines escaped as \n>
+```
+
+---
+
 # 🧠 How It Works
 
 1. Validate the repo URL against the GitHub allow-list
