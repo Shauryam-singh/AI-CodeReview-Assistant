@@ -1,4 +1,4 @@
-# 🚀 AI Code Review Assistant
+# 🚀 Automated Code Review Assistant
 
 An automated security-focused code review tool that scans public GitHub repositories for:
 
@@ -10,6 +10,10 @@ An automated security-focused code review tool that scans public GitHub reposito
 Built with **FastAPI + Python + Semgrep**  
 Frontend deployed on **Vercel**  
 Backend deployed on **Render**
+
+> **Naming note:** the repository is called `AI-CodeReview-Assistant`, but the current
+> pipeline is deterministic static analysis — **no LLM is used yet**. The LLM review
+> step is the next item on the roadmap (see [Future Improvements](#-future-improvements)).
 
 ---
 
@@ -83,8 +87,74 @@ Each issue includes:
 - Deployed on Vercel
 
 ## Deployment
-- Backend: Render
+- Backend: Render (`render.yaml` blueprint: web service + worker + Redis + Postgres)
 - Frontend: Vercel
+- Local full stack: Docker Compose (API + worker + Redis + Postgres)
+
+---
+
+# 🏛 Architecture
+
+```
+ GitHub PR event (opened / synchronize / reopened)
+        │
+        │  HMAC-SHA256 signed webhook
+        ▼
+ FastAPI  POST /webhook/github
+        │  verify signature
+        │  dedupe X-GitHub-Delivery (unique jobs.delivery_id)
+        ▼
+ Redis queue (arq)  ── arq job id = delivery id (collapses concurrent redeliveries)
+        │
+        ▼
+ arq worker
+        ├─ fetch PR diff + metadata (GitHub API, App installation token)
+        ├─ shallow clone into a resource-limited sandbox
+        ├─ scan changed files only: Semgrep + Python AST + secret regexes
+        ├─ risk-map and rank findings
+        ├─ record job / findings / reviews (Postgres, best-effort)
+        └─ post an inline PR review (fallback: one summary comment)
+                 │
+                 ▼
+        Postgres: repos · pull_requests · jobs · findings · reviews
+```
+
+The `/analyze` and `/analyze-pr` HTTP endpoints use the same scan pipeline
+synchronously and return the findings as JSON.
+
+## Design decisions & tradeoffs
+
+- **Async webhook + queue instead of scanning inside the request.** GitHub expects a
+  webhook response within ~10 seconds, while a clone + scan can take minutes. The API
+  verifies, persists, and enqueues (`202`), and the worker scans. Tradeoff: more moving
+  parts (Redis + a worker process), and the worker must be deployed alongside the API.
+- **Diff-only scanning for PRs.** Only files changed in the PR are scanned, which keeps
+  runs fast and comments relevant. Tradeoff: cross-file/architectural issues that do not
+  touch a changed line are missed.
+- **GitHub App installation tokens.** Short-lived (1 hour), scoped to the repositories the
+  app is installed on, and able to comment as a bot; a personal `GITHUB_TOKEN` is only a
+  local-dev fallback. Tradeoff: extra one-time setup (App registration + private key).
+- **Delivery-id idempotency at two layers.** `X-GitHub-Delivery` is both a unique DB
+  column and the arq job id. The DB check catches redeliveries across worker restarts;
+  the queue-level id collapses concurrent redeliveries even before the first row is
+  committed. Tradeoff: the DB layer requires `DATABASE_URL`; without it only the
+  queue-level window applies.
+- **Retry only transient failures.** Network errors/timeouts and GitHub `429`/`5xx` are
+  retried with bounded exponential backoff + jitter; auth errors, invalid payloads and
+  oversized repos fail once. Exhausted jobs become `dead_letter` rows instead of
+  disappearing. Tradeoff: no automatic requeue — recovering a dead letter is a manual
+  DB inspection/decision.
+- **Retry safety.** A retry replaces the job's `findings` rows, upserts its `reviews`
+  row per kind, and embeds `<!-- ai-review:<job_id> -->` (job id = delivery id) in posted
+  review/comment bodies. Before posting, the worker lists existing reviews/comments and
+  skips when the marker is present, so a timeout that actually succeeded server-side
+  cannot produce a duplicate comment.
+- **Optional persistence.** `DATABASE_URL` is optional: recording and dedupe are
+  best-effort and never break the webhook or the scan. Tradeoff: without a database,
+  history and the DB-level dedupe are unavailable.
+- **Sandboxed subprocesses.** `git` and `semgrep` run under memory/process/file limits and
+  hard timeouts (`prlimit`/`ulimit` on Linux, Job Objects on Windows), with an optional
+  network namespace. Tradeoff: conservative limits reject very large or slow repos.
 
 ---
 
@@ -127,15 +197,11 @@ To run tests, also install the dev dependencies:
 pip install -r requirements-dev.txt
 ```
 
-Make sure `requirements.txt` includes:
+Dependencies are pinned to exact versions in `requirements.txt` (and
+`requirements-dev.txt` for tests), so installs are reproducible.
 
-```
-fastapi
-uvicorn
-semgrep; sys_platform != "win32"
-```
-
-> **Note:** Semgrep runs on Linux/macOS/Docker; on native Windows it's skipped automatically (the AST and secret scans still run).
+> **Note:** Semgrep runs on Linux/macOS/Docker; on native Windows it's skipped automatically via the
+> `semgrep==...; sys_platform != "win32"` platform marker (the AST and secret scans still run).
 
 ---
 
@@ -166,7 +232,13 @@ cd backend
 pytest tests -v
 ```
 
-The suite covers the AST scanner, secret scanner, risk mapper, scan orchestration, and mocked API endpoint tests (no network required).
+The suite covers the AST scanner, secret scanner, risk mapper, scan orchestration,
+inline review rendering, webhook signature verification, delivery-id idempotency,
+retry/backoff/dead-letter handling, DB recording, and mocked GitHub API calls (no
+network required).
+
+The real-stack path (Postgres + Redis + worker) is exercised by the Docker smoke test
+described below.
 
 ---
 
@@ -264,6 +336,7 @@ The endpoint responds immediately; scanning happens in the worker. If Redis is u
 - **Idempotency** — duplicate deliveries (same `X-GitHub-Delivery` header) are deduplicated: the first delivery enqueues the job (using the delivery id as the arq job id, so even concurrent redeliveries collapse into one); later redeliveries get `200 {"status": "duplicate"}` and never re-scan.
 - **Retries** — transient failures (network errors/timeouts during clone, GitHub API `429`/`5xx`/network errors when posting the review) are retried with exponential backoff and ±20% jitter: `min(WEBHOOK_RETRY_BASE_SECONDS * 2^(n-1), WEBHOOK_RETRY_MAX_SECONDS)`. Permanent failures (bad payload, auth errors, oversized repos) stay one-shot `failed`/`skipped`.
 - **Dead letters** — once `WEBHOOK_MAX_TRIES` attempts are exhausted, the job is parked in the `dead_letter` state on the `jobs` table (with the last error and attempt count) instead of silently disappearing. Inspect with `SELECT * FROM jobs WHERE status = 'dead_letter';`.
+- **Retry safety** — retries do not duplicate state or GitHub comments: a retry replaces the job's previous `findings` rows, upserts its `reviews` row per kind, and every posted review/comment carries an HTML marker `<!-- ai-review:<job_id> -->` (the arq job id is the delivery id). Before posting, the worker lists existing reviews/comments and skips if the marker is already there.
 - Job lifecycle: `queued → running → succeeded | failed | skipped`, plus `running → retrying → running` on each retry and `retrying → dead_letter` when attempts are exhausted.
 
 ### Running the worker
@@ -274,6 +347,61 @@ arq app.worker.WorkerSettings
 ```
 
 Requires a Redis server (`REDIS_URL`, default `redis://localhost:6379/0`). On Windows use Memurai or WSL; on macOS/Linux `redis-server` works out of the box.
+
+Or run the API, worker, Redis, and Postgres together with Docker Compose (next section).
+
+---
+
+# 🐳 Full Stack with Docker Compose
+
+The repository ships a `docker-compose.yml` with four services:
+
+| Service | Purpose |
+|---------|---------|
+| `api` | FastAPI; runs `alembic upgrade head` on start, then serves on port `8000` |
+| `worker` | `arq app.worker.WorkerSettings`; picks up queued scans |
+| `redis` | arq job queue |
+| `postgres` | scan history + delivery-id idempotency |
+
+```bash
+docker compose up -d --build
+docker compose logs -f api worker      # watch it work
+```
+
+Run the end-to-end smoke test (builds the stack, verifies the Alembic migration against
+real Postgres, sends a signed webhook, waits for the worker to pick the job up, and
+checks that a redelivery is deduped):
+
+```bash
+./scripts/smoke_test.sh
+```
+
+Send a manual signed webhook:
+
+```bash
+python3 scripts/send_webhook.py --delivery manual-1 --secret dev-webhook-secret
+```
+
+Override defaults (webhook secret, GitHub App credentials, retry limits) with a `.env`
+file at the repo root or exported environment variables — see `docker-compose.yml`.
+
+---
+
+# ☁️ Deploying on Render
+
+`render.yaml` is a Render Blueprint that provisions:
+
+- a **web** service running the API (`preDeployCommand` runs `alembic upgrade head`)
+- a **worker** service running `arq app.worker.WorkerSettings` — scans do not run without it
+- a **Redis** instance (arq queue) and a **Postgres** database, wired in via `REDIS_URL` / `DATABASE_URL`
+
+Background workers have no free tier on Render, so the worker uses the smallest paid
+plan; the API/Postgres/Key Value can stay on free tiers for a demo (the free web
+service sleeps when idle).
+
+In the Render dashboard: **New → Blueprint**, select this repository, then fill in the
+`GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and optional
+`GITHUB_TOKEN` secrets when prompted. The health check is `GET /health`.
 
 ### GitHub App registration (manual, once)
 
@@ -371,8 +499,9 @@ Limits are configurable via environment variables (see `.env.example`):
 | `DATABASE_URL` | _(unset)_ | PostgreSQL URL; when set, scan history is persisted (see the PostgreSQL section) |
 
 For production usage:
-- Upgrade to Render Starter plan
-- Or move to background job architecture
+- Upgrade to a paid Render instance (the free instance sleeps and has 512MB RAM)
+- Or run the Docker Compose stack on any VPS; the API and worker are separate processes
+- The async queue/worker architecture is already in place — see the Architecture section
 
 ---
 
@@ -389,12 +518,18 @@ Private repositories require authentication integration.
 
 # 🚀 Future Improvements
 
-- Background job processing
-- GitHub OAuth integration
-- PR auto-commenting
-- PDF report export
-- Severity score calculation
-- Async scanning
+- **LLM review step** (the reason for the repository name): semantic review with structured
+  JSON output, merged/deduped with the static findings, with token/cost caps and graceful
+  degradation to static-only results when the provider is unavailable
+- **History & metrics**: API + dashboard over the existing `jobs`/`findings`/`reviews`
+  tables (per-repo trends, finding counts, scan/review latency)
+- **Evaluation harness**: a labelled set of PRs with precision/recall measured with and
+  without the LLM step
+- **CI**: lint (ruff), type-check (mypy), backend tests, frontend build, and the Docker
+  smoke test on every PR
+- **Rate limiting** per repository/installation and **structured logging** with request
+  and job ids
+- **PDF report export**
 
 ---
 

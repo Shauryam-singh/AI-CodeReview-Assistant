@@ -134,6 +134,10 @@ def process_pr_event(payload: dict, job_id: str | None = None):
 
         record_findings(job_id, repo_slug, pr_number, issues, inline, pr_info=pr)
 
+        # Stable across retries (arq reuses the job id), so a retry that
+        # already reached GitHub can detect its own previous review/comment.
+        marker = f"<!-- ai-review:{job_id} -->" if job_id else None
+
         # Post via App installation token, fall back to PAT
         token = _get_token(repo_slug)
         if not token:
@@ -144,7 +148,9 @@ def process_pr_event(payload: dict, job_id: str | None = None):
         if inline:
             body = format_scan_comment(remaining, len(changed_files),
                                        inline_count=len(inline), total_issues=len(issues))
-            ok, status, github_id = post_pr_review(repo_slug, str(pr_number), token, body, inline)
+            ok, status, github_id = post_pr_review(
+                repo_slug, str(pr_number), token, body, inline, marker=marker
+            )
             record_review(job_id, repo_slug, pr_number, KIND_REVIEW, status, body,
                           inline_count=len(inline), pr_info=pr, github_id=github_id)
             if not ok:
@@ -157,12 +163,14 @@ def process_pr_event(payload: dict, job_id: str | None = None):
                     )
                 print(f"WEBHOOK: review rejected ({status}), falling back to plain comment")
                 fallback = format_scan_comment(issues, len(changed_files))
-                ok = _post_comment_or_raise(repo_slug, pr_number, token, fallback)
+                ok = _post_comment_or_raise(
+                    repo_slug, pr_number, token, fallback, marker=marker
+                )
                 record_review(job_id, repo_slug, pr_number, KIND_COMMENT,
                               201 if ok else None, fallback, pr_info=pr)
         else:
             body = format_scan_comment(issues, len(changed_files))
-            ok = _post_comment_or_raise(repo_slug, pr_number, token, body)
+            ok = _post_comment_or_raise(repo_slug, pr_number, token, body, marker=marker)
             record_review(job_id, repo_slug, pr_number, KIND_COMMENT,
                           201 if ok else None, body, pr_info=pr)
         print(
@@ -186,9 +194,10 @@ def process_pr_event(payload: dict, job_id: str | None = None):
         finish_job(job_id, STATUS_FAILED, str(e))
 
 
-def _post_comment_or_raise(repo_slug: str, pr_number, token: str, body: str) -> bool:
+def _post_comment_or_raise(repo_slug: str, pr_number, token: str, body: str,
+                           marker: str | None = None) -> bool:
     """Plain PR comment; network errors become RetryableScanError."""
     try:
-        return post_pr_comment(repo_slug, str(pr_number), token, body)
+        return post_pr_comment(repo_slug, str(pr_number), token, body, marker=marker)
     except requests.RequestException as e:
         raise RetryableScanError(f"GitHub comment post failed: {e}") from e

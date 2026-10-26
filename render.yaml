@@ -1,0 +1,70 @@
+# Render Blueprint: API (web) + worker + Key Value (Redis) + Postgres.
+# Deploy with: Render Dashboard -> New -> Blueprint, point at this repo.
+# Secrets (GITHUB_*) are prompted for on first deploy (sync: false).
+#
+# Plans: background workers have no free tier on Render, so the worker uses the
+# smallest paid plan (0.5c-512mb). The API/Postgres/Key Value stay on free tiers
+# for a demo; free web services sleep when idle and free tiers have resource
+# limits, so upgrade those for anything real.
+
+services:
+  - type: web
+    name: ai-code-review-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    preDeployCommand: alembic upgrade head
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-code-review-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ai-code-review-redis
+          property: connectionString
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+
+  - type: worker
+    name: ai-code-review-worker
+    runtime: docker
+    plan: 0.5c-512mb
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: arq app.worker.WorkerSettings
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-code-review-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ai-code-review-redis
+          property: connectionString
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+
+  - type: keyvalue
+    name: ai-code-review-redis
+    plan: free
+    ipAllowList: [] # private network only
+
+databases:
+  - name: ai-code-review-db
+    plan: free
+    postgresMajorVersion: "16" # matches the version tested in docker-compose

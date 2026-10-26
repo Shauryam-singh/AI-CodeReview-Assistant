@@ -166,6 +166,12 @@ def record_findings(arq_job_id: str | None, repo_slug: str, pr_number, issues: l
                 session.query(Job).filter_by(arq_job_id=arq_job_id).one_or_none()
                 if arq_job_id else None
             )
+            if job is not None:
+                # A retried job rescans and records again; replace the rows
+                # from the previous attempt instead of duplicating them.
+                session.query(Finding).filter_by(job_id=job.id).delete(
+                    synchronize_session=False
+                )
             inlined = {
                 (c.get("path"), c.get("line"))
                 for c in inline_comments
@@ -200,6 +206,25 @@ def record_review(arq_job_id: str | None, repo_slug: str, pr_number, kind: str,
                 session.query(Job).filter_by(arq_job_id=arq_job_id).one_or_none()
                 if arq_job_id else None
             )
+            existing_rows = (
+                session.query(Review)
+                .filter_by(job_id=job.id, kind=kind)
+                .order_by(Review.id)
+                .all()
+                if job is not None else []
+            )
+            if existing_rows:
+                # Upsert per (job, kind): a retry must not add a second row,
+                # and duplicates left over from older retried jobs are cleaned up.
+                existing = existing_rows[0]
+                for duplicate in existing_rows[1:]:
+                    session.delete(duplicate)
+                existing.pull_request_id = pr.id
+                existing.github_id = github_id
+                existing.status_code = status_code
+                existing.inline_count = inline_count
+                existing.body = body
+                return
             session.add(Review(
                 pull_request_id=pr.id,
                 job_id=job.id if job else None,

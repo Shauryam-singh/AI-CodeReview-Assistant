@@ -103,6 +103,32 @@ def test_process_pr_event_missing_pr_number_is_noop():
     assert mock_pipeline.call_count == 0
 
 
+def test_process_pr_event_passes_retry_marker():
+    issues = [{"file": "app.py", "line": 11, "severity": "HIGH",
+               "tool": "semgrep", "message": "bad call"}]
+    with patch("app.services.webhook_service.run_pipeline", return_value=PIPELINE), \
+         patch("app.services.webhook_service.scan_pr_changes",
+               return_value={"issues": issues, "total_files": 1}), \
+         patch("app.services.webhook_service.get_token_for_repo", return_value="tok"), \
+         patch("app.services.webhook_service.post_pr_review",
+               return_value=(True, 201, 987)) as mock_review:
+        process_pr_event(PAYLOAD, job_id="job-9")
+    assert mock_review.call_args.kwargs["marker"] == "<!-- ai-review:job-9 -->"
+
+
+def test_process_pr_event_no_marker_without_job_id():
+    issues = [{"file": "app.py", "line": 11, "severity": "HIGH",
+               "tool": "semgrep", "message": "bad call"}]
+    with patch("app.services.webhook_service.run_pipeline", return_value=PIPELINE), \
+         patch("app.services.webhook_service.scan_pr_changes",
+               return_value={"issues": issues, "total_files": 1}), \
+         patch("app.services.webhook_service.get_token_for_repo", return_value="tok"), \
+         patch("app.services.webhook_service.post_pr_review",
+               return_value=(True, 201, 987)) as mock_review:
+        process_pr_event(PAYLOAD)
+    assert mock_review.call_args.kwargs["marker"] is None
+
+
 def test_process_pr_event_retries_on_transient_review_status():
     """5xx/429 from the review API must raise RetryableScanError, not fall back."""
     issues = [{"file": "app.py", "line": 11, "severity": "HIGH",

@@ -59,12 +59,55 @@ def build_review_comments(issues: list, commentable_lines: dict, limit: int = MA
     return inline, remaining
 
 
-def post_pr_review(repo_slug: str, pr_number, token: str, body: str, comments: list):
+def find_existing_review(repo_slug: str, pr_number, token: str,
+                         marker: str) -> int | None:
+    """Return the id of a review whose body contains ``marker``, if any."""
+    url = f"https://api.github.com/repos/{repo_slug}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        for page in range(1, 21):  # up to 2000 reviews; stop early in practice
+            r = requests.get(
+                url,
+                params={"per_page": 100, "page": page},
+                headers=headers,
+                timeout=15,
+            )
+            if r.status_code != 200:
+                return None
+            reviews = r.json()
+            for review in reviews:
+                if marker in (review.get("body") or ""):
+                    return review.get("id")
+            if len(reviews) < 100:
+                break
+    except (requests.RequestException, ValueError) as e:
+        # Best effort: if we cannot check, post rather than silently skip.
+        logger.warning("Failed to list existing PR reviews: %s", e)
+        return None
+    return None
+
+
+def post_pr_review(repo_slug: str, pr_number, token: str, body: str, comments: list,
+                   marker: str | None = None):
     """Create a COMMENT review with inline comments anchored to the diff.
 
     Returns (ok, status_code, github_review_id). Falls back to a plain PR
     comment upstream when GitHub rejects the review payload.
+
+    ``marker`` is an HTML comment embedded in the body. When given, an
+    existing review carrying the same marker is reused instead of creating
+    a duplicate on retry.
     """
+    if marker:
+        existing = find_existing_review(repo_slug, pr_number, token, marker)
+        if existing is not None:
+            logger.info("Review with marker already exists (id=%s); skipping", existing)
+            return True, 200, existing
+        body = f"{marker}\n{body}"
+
     url = f"https://api.github.com/repos/{repo_slug}/pulls/{pr_number}"
     headers = {
         "Authorization": f"token {token}",

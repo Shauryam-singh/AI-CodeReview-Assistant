@@ -159,3 +159,63 @@ def test_post_pr_review_network_error(mock_post):
     assert ok is False
     assert status == 0
     assert github_id is None
+
+
+@patch("app.services.github.review_service.requests.post")
+@patch("app.services.github.review_service.requests.get")
+def test_post_pr_review_reuses_existing_marker(mock_get, mock_post):
+    marker = "<!-- ai-review:job-1 -->"
+    mock_get.return_value = MagicMock(
+        status_code=200,
+        json=lambda: [{"id": 555, "body": f"{marker}\nsummary"}],
+    )
+    ok, status, github_id = post_pr_review(
+        "a/b", 5, "tok", "summary", [], marker=marker
+    )
+    assert (ok, status, github_id) == (True, 200, 555)
+    assert mock_post.call_count == 0  # no duplicate review created
+
+
+@patch("app.services.github.review_service.requests.post")
+@patch("app.services.github.review_service.requests.get")
+def test_post_pr_review_embeds_marker_when_new(mock_get, mock_post):
+    marker = "<!-- ai-review:job-1 -->"
+    mock_get.return_value = MagicMock(status_code=200, json=lambda: [])
+    mock_post.return_value = MagicMock(status_code=201, json=lambda: {"id": 987})
+    ok, status, github_id = post_pr_review(
+        "a/b", 5, "tok", "summary", [], marker=marker
+    )
+    assert (ok, status, github_id) == (True, 201, 987)
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["body"] == f"{marker}\nsummary"
+
+
+@patch("app.services.github.review_service.requests.post")
+@patch("app.services.github.review_service.requests.get")
+def test_post_pr_review_finds_marker_on_later_page(mock_get, mock_post):
+    marker = "<!-- ai-review:job-1 -->"
+    first_page = [{"id": i, "body": f"unrelated {i}"} for i in range(100)]
+    second_page = [{"id": 556, "body": f"{marker}\nsummary"}]
+    mock_get.side_effect = [
+        MagicMock(status_code=200, json=lambda: first_page),
+        MagicMock(status_code=200, json=lambda: second_page),
+    ]
+    ok, status, github_id = post_pr_review(
+        "a/b", 5, "tok", "summary", [], marker=marker
+    )
+    assert (ok, status, github_id) == (True, 200, 556)
+    assert mock_get.call_count == 2
+    assert mock_post.call_count == 0
+
+
+@patch("app.services.github.review_service.requests.post")
+@patch("app.services.github.review_service.requests.get",
+       side_effect=requests.exceptions.ConnectionError("no list"))
+def test_post_pr_review_posts_when_marker_lookup_fails(mock_get, mock_post):
+    mock_post.return_value = MagicMock(status_code=201, json=lambda: {"id": 988})
+    ok, _, github_id = post_pr_review(
+        "a/b", 5, "tok", "summary", [], marker="<!-- ai-review:job-1 -->"
+    )
+    assert ok is True
+    assert github_id == 988
+    assert mock_post.call_count == 1

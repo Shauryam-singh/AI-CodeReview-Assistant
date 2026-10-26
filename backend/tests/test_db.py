@@ -181,6 +181,51 @@ def test_record_findings_marks_inlined(db):
         assert findings[1].line == 99
 
 
+def test_record_findings_replaces_previous_attempt(db):
+    record_job_queued("job-3b", "a/b", 9)
+    issues = [
+        {"file": "app.py", "line": 11, "message": "m1"},
+        {"file": "app.py", "line": 12, "message": "m2"},
+    ]
+    record_findings("job-3b", "a/b", 9, issues, [])
+    record_findings("job-3b", "a/b", 9, issues[:1], [])  # retry, fewer findings
+    with session_scope() as s:
+        findings = s.query(Finding).all()
+        assert len(findings) == 1  # replaced, not appended
+        assert findings[0].message == "m1"
+
+
+def test_record_review_upserts_per_job_and_kind(db):
+    record_job_queued("job-4b", "a/b", 3)
+    record_review("job-4b", "a/b", 3, KIND_REVIEW, 0, "body", inline_count=1)
+    record_review("job-4b", "a/b", 3, KIND_REVIEW, 200, "body", inline_count=1,
+                  github_id=777)
+    with session_scope() as s:
+        reviews = s.query(Review).all()
+        assert len(reviews) == 1
+        assert reviews[0].status_code == 200
+        assert reviews[0].github_id == 777
+
+
+def test_record_review_cleans_up_legacy_duplicates(db):
+    record_job_queued("job-5b", "a/b", 4)
+    with session_scope() as s:
+        job = s.query(Job).filter_by(arq_job_id="job-5b").one()
+        pr = s.query(PullRequest).one()
+        for status in (0, 502):
+            s.add(Review(
+                pull_request_id=pr.id, job_id=job.id, kind=KIND_REVIEW,
+                status_code=status, body="old", inline_count=0,
+            ))
+    record_review("job-5b", "a/b", 4, KIND_REVIEW, 200, "new",
+                  inline_count=2, github_id=9)
+    with session_scope() as s:
+        reviews = s.query(Review).all()
+        assert len(reviews) == 1
+        assert reviews[0].status_code == 200
+        assert reviews[0].github_id == 9
+
+
 def test_record_review(db):
     record_job_queued("job-4", "a/b", 3)
     record_review("job-4", "a/b", 3, KIND_REVIEW, 201, "summary body",
