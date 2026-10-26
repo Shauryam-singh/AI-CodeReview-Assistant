@@ -12,8 +12,9 @@ Frontend deployed on **Vercel**
 Backend deployed on **Render**
 
 > **Naming note:** the repository is called `AI-CodeReview-Assistant`, but the current
-> pipeline is deterministic static analysis — **no LLM is used yet**. The LLM review
-> step is the next item on the roadmap (see [Future Improvements](#-future-improvements)).
+> webhook pipeline is deterministic static analysis. An optional Gemini review module
+> exists behind `LLM_ENABLED=false`, but it is not wired into the webhook path yet
+> (see “Optional LLM review” below).
 
 ---
 
@@ -74,6 +75,7 @@ Each issue includes:
 - Semgrep (Linux/macOS only)
 - Python AST
 - Regex secret scanning
+- Optional Gemini review module (`LLM_ENABLED=false`; not wired into the webhook yet)
 - `subprocess` + OS sandbox (Job Objects / prlimit)
 - Redis + arq (webhook job queue)
 - PyJWT (GitHub App authentication)
@@ -128,8 +130,9 @@ Each issue includes:
 5. Findings are anchored to diff lines; the worker records `findings`/`reviews` in Postgres and posts one inline PR review. Issues outside the diff are listed in the summary; a rejected review falls back to one plain PR comment.
 6. A retry reuses the same job id and marker, so rows are replaced/upserted and GitHub comments are not duplicated.
 
-**No LLM call is part of this flow yet.** The LLM review step is on the roadmap;
-the current pipeline is deterministic static analysis.
+**The LLM stage is not wired into this flow yet.** `backend/app/services/llm/`
+contains an opt-in Gemini review module (`LLM_ENABLED=false` by default) with a
+standalone smoke script. The webhook pipeline remains deterministic static analysis.
 
 The `/analyze` and `/analyze-pr` HTTP endpoints use the same scan pipeline
 synchronously and return the findings as JSON.
@@ -246,11 +249,49 @@ pytest tests -v
 
 The suite covers the AST scanner, secret scanner, risk mapper, scan orchestration,
 inline review rendering, webhook signature verification, delivery-id idempotency,
-retry/backoff/dead-letter handling, DB recording, and mocked GitHub API calls (no
-network required).
+retry/backoff/dead-letter handling, DB recording, mocked GitHub API calls, and the
+optional LLM review (mocked Gemini client, redaction, validation, and fail-open
+behavior). No network is required.
 
 The real-stack path (Postgres + Redis + worker) is exercised by the Docker smoke test
 described below.
+
+---
+
+## Optional LLM review (Phase 1–2)
+
+`backend/app/services/llm/` contains an opt-in Gemini review module:
+
+| File | Purpose |
+|---|---|
+| `config.py` | Environment settings, defaults and safe parsing |
+| `schema.py` | `LLMFinding` / `LLMReview` Pydantic models |
+| `prompt.py` | Versioned prompt (`PROMPT_VERSION = "1.0.0"`) |
+| `client.py` | Gemini REST client (`responseMimeType: application/json`, timeout, one 429 retry) |
+| `review_service.py` | Redaction, validation, filtering, sanitization, fail-open wrapper |
+
+It is **off by default and not wired into the webhook yet**. It returns `[]` when
+`LLM_ENABLED=false`, when no `LLM_API_KEY` is set, for private repositories unless
+`LLM_ALLOW_PRIVATE_REPOS=true`, or on any request/parse/validation failure. It never
+raises `RetryableScanError`, so it cannot fail a webhook job.
+
+Set `LLM_ENABLED=true` and `LLM_API_KEY=...` in the gitignored `.env`, then try it on the
+built-in SQL-injection sample (or pass `--diff path/to/file.diff`):
+
+```bash
+cd backend
+./venv/bin/python scripts/llm_smoke.py
+```
+
+The script prints validated findings as JSON. With the feature disabled it prints an
+empty result; it never prints the API key. If Gemini is temporarily unavailable for
+`gemini-3.8-flash` (HTTP 503), try the free fallback with
+`LLM_MODEL=gemini-3.5-flash-lite ./venv/bin/python scripts/llm_smoke.py`.
+
+Safety behavior includes: secret-scanner line hits plus generic token/private-key
+redaction before the diff leaves the process, file/line validation against the diff,
+low-confidence and style-only filtering, a findings cap, and HTML/@mention/link
+sanitization before any output could be posted.
 
 ---
 
@@ -588,6 +629,16 @@ Limits are configurable via environment variables (see `.env.example`):
 | `WEBHOOK_RETRY_BASE_SECONDS` | `30` | Base delay for exponential retry backoff |
 | `WEBHOOK_RETRY_MAX_SECONDS` | `3600` | Cap for the retry backoff delay |
 | `DATABASE_URL` | _(unset)_ | PostgreSQL URL; when set, scan history is persisted (see the PostgreSQL section) |
+| `LLM_ENABLED` | `false` | Enable the optional Gemini review module |
+| `LLM_PROVIDER` | `gemini` | LLM provider (Gemini is implemented) |
+| `LLM_API_KEY` | _(empty)_ | Gemini API key; set in the gitignored `.env` only |
+| `LLM_MODEL` | `gemini-3.8-flash` | Gemini model name |
+| `LLM_TIMEOUT_SECONDS` | `45` | Per-request timeout |
+| `LLM_MAX_INPUT_CHARS` | `120000` | Truncate the redacted diff to this size |
+| `LLM_MAX_OUTPUT_TOKENS` | `4096` | Gemini output cap |
+| `LLM_MAX_FINDINGS` | `10` | Cap after validation/dedupe |
+| `LLM_MIN_CONFIDENCE` | `0.6` | Drop findings below this confidence |
+| `LLM_ALLOW_PRIVATE_REPOS` | `false` | Allow sending private-repo diffs to Gemini |
 
 For production usage:
 - Upgrade to a paid Render instance (the free instance sleeps and has 512MB RAM)
@@ -609,9 +660,10 @@ Private repositories require authentication integration.
 
 # 🚀 Future Improvements
 
-- **LLM review step** (the reason for the repository name): semantic review with structured
-  JSON output, merged/deduped with the static findings, with token/cost caps and graceful
-  degradation to static-only results when the provider is unavailable
+- **Wire the opt-in LLM review into the webhook**: merge/dedupe LLM findings with static
+  findings, add Redis caching keyed by `head_sha + prompt version + model`, a daily
+  request budget, and a 30–50 PR evaluation; keep graceful degradation to static-only
+  results when the provider is unavailable
 - **History & metrics**: API + dashboard over the existing `jobs`/`findings`/`reviews`
   tables (per-repo trends, finding counts, scan/review latency)
 - **Evaluation harness**: a labelled set of PRs with precision/recall measured with and
