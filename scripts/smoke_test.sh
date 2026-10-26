@@ -71,6 +71,9 @@ for _ in $(seq 1 60); do
 done
 log "job status: ${STATUS:-<missing>}"
 [ -n "$STATUS" ] || { log "job row was not recorded in Postgres"; exit 1; }
+# The payload points at a repo that does not exist, so the job is expected to
+# end as "failed" (or retrying/dead_letter). Any non-queued status proves the
+# worker executed it, which is what this smoke test checks.
 [ "$STATUS" != "queued" ] || { log "worker never picked up the job"; exit 1; }
 
 log "re-sending the same delivery (idempotency)"

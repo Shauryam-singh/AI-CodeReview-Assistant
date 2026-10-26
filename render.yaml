@@ -63,6 +63,7 @@ services:
     name: ai-code-review-redis
     plan: free
     ipAllowList: [] # private network only
+    maxmemoryPolicy: noeviction # never silently drop queued jobs
 
 databases:
   - name: ai-code-review-db
