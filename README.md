@@ -12,8 +12,9 @@ Frontend deployed on **Vercel**
 Backend deployed on **Render**
 
 > **Naming note:** the repository is called `AI-CodeReview-Assistant`, but the current
-> pipeline is deterministic static analysis — **no LLM is used yet**. The LLM review
-> step is the next item on the roadmap (see [Future Improvements](#-future-improvements)).
+> webhook pipeline is deterministic static analysis. An optional Gemini review module
+> exists behind `LLM_ENABLED=false`, but it is not wired into the webhook path yet
+> (see “Optional LLM review” below).
 
 ---
 
@@ -74,6 +75,7 @@ Each issue includes:
 - Semgrep (Linux/macOS only)
 - Python AST
 - Regex secret scanning
+- Optional Gemini review module (`LLM_ENABLED=false`; not wired into the webhook yet)
 - `subprocess` + OS sandbox (Job Objects / prlimit)
 - Redis + arq (webhook job queue)
 - PyJWT (GitHub App authentication)
@@ -118,6 +120,19 @@ Each issue includes:
                  ▼
         Postgres: repos · pull_requests · jobs · findings · reviews
 ```
+
+### Webhook request flow (what runs today)
+
+1. GitHub sends a signed `pull_request` webhook (`opened`, `synchronize`, or `reopened`).
+2. FastAPI verifies `X-Hub-Signature-256`, checks `X-GitHub-Delivery`, records a `jobs` row in `queued`, and enqueues an arq job using the delivery id as the arq job id. It returns `202` immediately.
+3. The arq worker fetches PR metadata and the diff with the GitHub App installation token, then shallow-clones the repo into the sandbox.
+4. It runs **Semgrep + Python AST + secret regexes** on the changed files only.
+5. Findings are anchored to diff lines; the worker records `findings`/`reviews` in Postgres and posts one inline PR review. Issues outside the diff are listed in the summary; a rejected review falls back to one plain PR comment.
+6. A retry reuses the same job id and marker, so rows are replaced/upserted and GitHub comments are not duplicated.
+
+**The LLM stage is not wired into this flow yet.** `backend/app/services/llm/`
+contains an opt-in Gemini review module (`LLM_ENABLED=false` by default) with a
+standalone smoke script. The webhook pipeline remains deterministic static analysis.
 
 The `/analyze` and `/analyze-pr` HTTP endpoints use the same scan pipeline
 synchronously and return the findings as JSON.
@@ -234,11 +249,49 @@ pytest tests -v
 
 The suite covers the AST scanner, secret scanner, risk mapper, scan orchestration,
 inline review rendering, webhook signature verification, delivery-id idempotency,
-retry/backoff/dead-letter handling, DB recording, and mocked GitHub API calls (no
-network required).
+retry/backoff/dead-letter handling, DB recording, mocked GitHub API calls, and the
+optional LLM review (mocked Gemini client, redaction, validation, and fail-open
+behavior). No network is required.
 
 The real-stack path (Postgres + Redis + worker) is exercised by the Docker smoke test
 described below.
+
+---
+
+## Optional LLM review (Phase 1–2)
+
+`backend/app/services/llm/` contains an opt-in Gemini review module:
+
+| File | Purpose |
+|---|---|
+| `config.py` | Environment settings, defaults and safe parsing |
+| `schema.py` | `LLMFinding` / `LLMReview` Pydantic models |
+| `prompt.py` | Versioned prompt (`PROMPT_VERSION = "1.0.0"`) |
+| `client.py` | Gemini REST client (`responseMimeType: application/json`, timeout, one 429 retry) |
+| `review_service.py` | Redaction, validation, filtering, sanitization, fail-open wrapper |
+
+It is **off by default and not wired into the webhook yet**. It returns `[]` when
+`LLM_ENABLED=false`, when no `LLM_API_KEY` is set, for private repositories unless
+`LLM_ALLOW_PRIVATE_REPOS=true`, or on any request/parse/validation failure. It never
+raises `RetryableScanError`, so it cannot fail a webhook job.
+
+Set `LLM_ENABLED=true` and `LLM_API_KEY=...` in the gitignored `.env`, then try it on the
+built-in SQL-injection sample (or pass `--diff path/to/file.diff`):
+
+```bash
+cd backend
+./venv/bin/python scripts/llm_smoke.py
+```
+
+The script prints validated findings as JSON. With the feature disabled it prints an
+empty result; it never prints the API key. If Gemini is temporarily unavailable for
+`gemini-3.8-flash` (HTTP 503), try the free fallback with
+`LLM_MODEL=gemini-3.5-flash-lite ./venv/bin/python scripts/llm_smoke.py`.
+
+Safety behavior includes: secret-scanner line hits plus generic token/private-key
+redaction before the diff leaves the process, file/line validation against the diff,
+low-confidence and style-only filtering, a findings cap, and HTML/@mention/link
+sanitization before any output could be posted.
 
 ---
 
@@ -333,11 +386,48 @@ The endpoint responds immediately; scanning happens in the worker. If Redis is u
 
 ### Reliability: idempotency, retries, dead letters
 
-- **Idempotency** — duplicate deliveries (same `X-GitHub-Delivery` header) are deduplicated: the first delivery enqueues the job (using the delivery id as the arq job id, so even concurrent redeliveries collapse into one); later redeliveries get `200 {"status": "duplicate"}` and never re-scan.
-- **Retries** — transient failures (network errors/timeouts during clone, GitHub API `429`/`5xx`/network errors when posting the review) are retried with exponential backoff and ±20% jitter: `min(WEBHOOK_RETRY_BASE_SECONDS * 2^(n-1), WEBHOOK_RETRY_MAX_SECONDS)`. Permanent failures (bad payload, auth errors, oversized repos) stay one-shot `failed`/`skipped`.
-- **Dead letters** — once `WEBHOOK_MAX_TRIES` attempts are exhausted, the job is parked in the `dead_letter` state on the `jobs` table (with the last error and attempt count) instead of silently disappearing. Inspect with `SELECT * FROM jobs WHERE status = 'dead_letter';`.
-- **Retry safety** — retries do not duplicate state or GitHub comments: a retry replaces the job's previous `findings` rows, upserts its `reviews` row per kind, and every posted review/comment carries an HTML marker `<!-- ai-review:<job_id> -->` (the arq job id is the delivery id). Before posting, the worker lists existing reviews/comments and skips if the marker is already there.
-- Job lifecycle: `queued → running → succeeded | failed | skipped`, plus `running → retrying → running` on each retry and `retrying → dead_letter` when attempts are exhausted.
+**Idempotency**
+
+- Duplicate deliveries (same `X-GitHub-Delivery` header) are deduplicated at two layers: `jobs.delivery_id` is unique, and the delivery id is used as the arq job id so concurrent redeliveries collapse before a row is committed. Later deliveries get `200 {"status": "duplicate"}` and never re-scan.
+- The DB check is best-effort: without `DATABASE_URL`, only the arq-level window applies.
+
+**Failure classification**
+
+| Class | Examples | Handling |
+|---|---|---|
+| Transient | clone DNS/timeout/reset/network errors; GitHub `429`/`5xx`/network errors when posting | retry with backoff |
+| Permanent | invalid payload, missing PR number, auth/installation errors, invalid repo URL, oversized repo | one-shot `failed`/`skipped`; no retry |
+| Exhausted | all `WEBHOOK_MAX_TRIES` attempts used | park in `dead_letter` with the last error |
+
+**Backoff**
+
+`delay = min(WEBHOOK_RETRY_BASE_SECONDS * 2^(attempt - 1), WEBHOOK_RETRY_MAX_SECONDS)` with ±20% jitter. Defaults: 5 total attempts, 30 s base, 1 h cap. The worker sets the job to `retrying` and records the attempt/error before raising `Retry(defer=...)`.
+
+**State machine**
+
+```text
+queued ──▶ running ──▶ succeeded
+                 ├──▶ failed
+                 ├──▶ skipped
+                 └──▶ retrying ──▶ running
+                          └──▶ dead_letter  (attempts exhausted)
+```
+
+**Dead letters**
+
+Once attempts are exhausted, the job stays in `jobs` with `status = 'dead_letter'`, the attempt count, and the last error. There is no automatic requeue API; inspect with:
+
+```sql
+SELECT id, delivery_id, action, attempts, error, finished_at
+FROM jobs
+WHERE status = 'dead_letter'
+ORDER BY finished_at DESC;
+```
+
+**Retry safety**
+
+- A retry replaces the job's `findings` rows and upserts its `reviews` row per `(job_id, kind)` (application-level, with legacy duplicates cleaned up).
+- Posted reviews/comments carry `<!-- ai-review:<job_id> -->`; before posting, the worker lists existing reviews/comments and skips if the marker is present. This covers the "timeout but GitHub actually succeeded" case.
 
 ### Running the worker
 
@@ -427,7 +517,7 @@ GITHUB_APP_PRIVATE_KEY=<PEM contents, newlines escaped as \n>
 
 Scan history is persisted to PostgreSQL with **SQLAlchemy 2.0** and migrated with **Alembic**. Persistence is **optional**: when `DATABASE_URL` is unset the app and webhook worker run exactly as before and recording is skipped (no-op).
 
-### Tables
+### Schema
 
 | Table | Purpose |
 |-------|---------|
@@ -436,6 +526,43 @@ Scan history is persisted to PostgreSQL with **SQLAlchemy 2.0** and migrated wit
 | `jobs` | arq scan-job lifecycle: `queued → running → succeeded/failed/skipped`, plus `retrying`/`dead_letter` for retried and exhausted jobs; GitHub `delivery_id` (unique, dedupes redeliveries), attempt count, error text and timestamps |
 | `findings` | One row per scan issue (file, line, severity, tool, risk, suggestion, snippet); `inlined` marks findings that became an inline review comment |
 | `reviews` | Every review/comment posted back to GitHub: kind (`review`/`comment`), GitHub id, HTTP status, inline count, body |
+
+Key columns and constraints:
+
+```text
+repos
+  id PK · full_name UNIQUE · html_url · created_at · updated_at
+
+pull_requests
+  id PK · repo_id FK → repos.id (ON DELETE CASCADE)
+  number · title · state · html_url · head_sha · base_sha
+  created_at · updated_at
+  UNIQUE (repo_id, number)
+
+jobs
+  id PK · arq_job_id UNIQUE · delivery_id UNIQUE
+  repo_id FK → repos.id (CASCADE) · pull_request_id FK → pull_requests.id (CASCADE)
+  action · status · attempts · error
+  enqueued_at · started_at · finished_at
+
+findings
+  id PK · job_id FK → jobs.id (CASCADE) · pull_request_id FK → pull_requests.id (CASCADE)
+  file · line · severity · message · tool · risk · suggestion · code_snippet
+  inlined · created_at
+
+reviews
+  id PK · pull_request_id FK → pull_requests.id (CASCADE) · job_id FK → jobs.id (CASCADE)
+  kind ("review" | "comment") · github_id · status_code · inline_count · body · created_at
+```
+
+- `jobs.delivery_id` is the DB-level idempotency key; `jobs.arq_job_id` is also
+  unique and is reused across retries.
+- Foreign keys use `ON DELETE CASCADE`; `findings.job_id` and `reviews.job_id`
+  are nullable for scans recorded without a queued job.
+- `reviews` has no DB-level unique constraint on `(job_id, kind)`; the
+  application upserts that row and cleans up legacy duplicates during retries.
+- Alembic migrations: `0001_initial` creates the tables,
+  `0002_webhook_reliability` adds `delivery_id` and `attempts`.
 
 ### Setup
 
@@ -461,6 +588,8 @@ Recording is best-effort: a Postgres outage is logged but never breaks the scan 
 
 # 🧠 How It Works
 
+## Synchronous endpoints (`/analyze`, `/analyze-pr`)
+
 1. Validate the repo URL against the GitHub allow-list
 2. Check repo size via the GitHub API (reject if over limit)
 3. Shallow-clone (`--depth 1`) into a temp dir inside a sandboxed subprocess
@@ -468,6 +597,9 @@ Recording is best-effort: a Postgres outage is logged but never breaks the scan 
 5. Run scanners (Semgrep, AST, secret detection) — only on changed files for PRs
 6. Aggregate results and return structured JSON
 7. Clean up the temp clone
+
+The asynchronous webhook path is documented in
+[Webhook request flow](#webhook-request-flow-what-runs-today) above.
 
 ---
 
@@ -497,6 +629,16 @@ Limits are configurable via environment variables (see `.env.example`):
 | `WEBHOOK_RETRY_BASE_SECONDS` | `30` | Base delay for exponential retry backoff |
 | `WEBHOOK_RETRY_MAX_SECONDS` | `3600` | Cap for the retry backoff delay |
 | `DATABASE_URL` | _(unset)_ | PostgreSQL URL; when set, scan history is persisted (see the PostgreSQL section) |
+| `LLM_ENABLED` | `false` | Enable the optional Gemini review module |
+| `LLM_PROVIDER` | `gemini` | LLM provider (Gemini is implemented) |
+| `LLM_API_KEY` | _(empty)_ | Gemini API key; set in the gitignored `.env` only |
+| `LLM_MODEL` | `gemini-3.8-flash` | Gemini model name |
+| `LLM_TIMEOUT_SECONDS` | `45` | Per-request timeout |
+| `LLM_MAX_INPUT_CHARS` | `120000` | Truncate the redacted diff to this size |
+| `LLM_MAX_OUTPUT_TOKENS` | `4096` | Gemini output cap |
+| `LLM_MAX_FINDINGS` | `10` | Cap after validation/dedupe |
+| `LLM_MIN_CONFIDENCE` | `0.6` | Drop findings below this confidence |
+| `LLM_ALLOW_PRIVATE_REPOS` | `false` | Allow sending private-repo diffs to Gemini |
 
 For production usage:
 - Upgrade to a paid Render instance (the free instance sleeps and has 512MB RAM)
@@ -518,9 +660,10 @@ Private repositories require authentication integration.
 
 # 🚀 Future Improvements
 
-- **LLM review step** (the reason for the repository name): semantic review with structured
-  JSON output, merged/deduped with the static findings, with token/cost caps and graceful
-  degradation to static-only results when the provider is unavailable
+- **Wire the opt-in LLM review into the webhook**: merge/dedupe LLM findings with static
+  findings, add Redis caching keyed by `head_sha + prompt version + model`, a daily
+  request budget, and a 30–50 PR evaluation; keep graceful degradation to static-only
+  results when the provider is unavailable
 - **History & metrics**: API + dashboard over the existing `jobs`/`findings`/`reviews`
   tables (per-repo trends, finding counts, scan/review latency)
 - **Evaluation harness**: a labelled set of PRs with precision/recall measured with and

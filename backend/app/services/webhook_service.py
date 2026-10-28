@@ -2,14 +2,17 @@ import os
 
 import requests
 
-from app.services.pipeline_service import run_pipeline
-from app.services.existing.scan_service import scan_pr_changes
 from app.services.context.diff_parser import parse_commentable_lines
 from app.services.errors import RetryableScanError
-from app.services.github.app_auth import get_token_for_repo, AppAuthError
+from app.services.existing.scan_service import scan_pr_changes
+from app.services.github.app_auth import AppAuthError, get_token_for_repo
 from app.services.github.comment_service import post_pr_comment
 from app.services.github.review_service import build_review_comments, post_pr_review
 from app.services.limits import RepoTooLargeError
+from app.services.llm.review_service import review_with_llm
+from app.services.llm.schema import LLMFinding
+from app.services.merging import merge_findings
+from app.services.pipeline_service import run_pipeline
 from app.services.recording import (
     KIND_COMMENT,
     KIND_REVIEW,
@@ -21,7 +24,7 @@ from app.services.recording import (
     record_findings,
     record_review,
 )
-from app.services.url_validator import validate_github_repo_url, InvalidRepoUrlError
+from app.services.url_validator import InvalidRepoUrlError, validate_github_repo_url
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
@@ -60,10 +63,13 @@ def format_scan_comment(issues: list, total_files: int, inline_count: int = 0,
                         total_issues: int | None = None) -> str:
     total = len(issues) if total_issues is None else total_issues
     if total == 0:
-        return f"✅ No security issues found in {total_files} changed file(s)."
+        return f"✅ No issues found in {total_files} changed file(s)."
+    has_llm = any(isinstance(i, dict) and i.get("tool") == "llm" for i in issues)
     lines = [
         f"🔍 Found **{total}** issue(s) in {total_files} changed file(s):\n",
     ]
+    if has_llm:
+        lines.append("⚠️ Some findings are AI-generated; verify before applying.\n")
     if inline_count:
         note = inline_count if inline_count == total else f"{inline_count} of {total}"
         lines.append(f"📍 {note} posted as inline comment(s); the rest are listed below:\n")
@@ -127,9 +133,28 @@ def process_pr_event(payload: dict, job_id: str | None = None):
         scan_results = scan_pr_changes(pipeline_data["repo_path"], changed_files)
         issues = scan_results["issues"]
 
+        diff_text = context.get("diff_text", "") or ""
+        secret_findings = scan_results.get("secret_findings", []) or []
+
+        llm_results = review_with_llm(
+            diff_text,
+            changed_files,
+            repo_slug=repo_slug,
+            repo_private=bool((repo or {}).get("private")),
+            secret_findings=secret_findings,
+        )
+        llm_issues = []
+        for finding in llm_results:
+            if isinstance(finding, LLMFinding):
+                llm_issues.append(finding.as_issue())
+            elif isinstance(finding, dict):
+                llm_issues.append(finding)
+
+        issues = merge_findings(issues, llm_issues)
+
         # GitHub only accepts inline comments on lines that appear in the
         # PR diff, so map the diff hunks first and split the findings.
-        commentable = parse_commentable_lines(context.get("diff_text", ""))
+        commentable = parse_commentable_lines(diff_text)
         inline, remaining = build_review_comments(issues, commentable)
 
         record_findings(job_id, repo_slug, pr_number, issues, inline, pr_info=pr)
