@@ -224,4 +224,4 @@ def test_format_scan_comment_mixed_inline_and_listed():
 
 
 def test_format_scan_comment_no_issues():
-    assert "No security issues" in format_scan_comment([], 4)
+    assert "No issues found" in format_scan_comment([], 4)
