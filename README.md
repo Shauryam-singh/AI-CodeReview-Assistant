@@ -13,8 +13,8 @@ Backend deployed on **Render**
 
 > **Naming note:** the repository is called `AI-CodeReview-Assistant`, but the current
 > webhook pipeline is deterministic static analysis. An optional Gemini review module
-> exists behind `LLM_ENABLED=false`, but it is not wired into the webhook path yet
-> (see “Optional LLM review” below).
+> is merged with static findings behind `LLM_ENABLED=false`, cached in Redis, and fail-open
+> (see [Optional LLM review](#optional-llm-review-phases-17)).
 
 ---
 
@@ -75,7 +75,7 @@ Each issue includes:
 - Semgrep (Linux/macOS only)
 - Python AST
 - Regex secret scanning
-- Optional Gemini review module (`LLM_ENABLED=false`; not wired into the webhook yet)
+- Optional Gemini review module (`LLM_ENABLED=false` by default; merged with static findings, cached in Redis)
 - `subprocess` + OS sandbox (Job Objects / prlimit)
 - Redis + arq (webhook job queue)
 - PyJWT (GitHub App authentication)
@@ -130,9 +130,9 @@ Each issue includes:
 5. Findings are anchored to diff lines; the worker records `findings`/`reviews` in Postgres and posts one inline PR review. Issues outside the diff are listed in the summary; a rejected review falls back to one plain PR comment.
 6. A retry reuses the same job id and marker, so rows are replaced/upserted and GitHub comments are not duplicated.
 
-**The LLM stage is not wired into this flow yet.** `backend/app/services/llm/`
-contains an opt-in Gemini review module (`LLM_ENABLED=false` by default) with a
-standalone smoke script. The webhook pipeline remains deterministic static analysis.
+`backend/app/services/llm/` provides an optional Gemini review module that is merged into
+the webhook pipeline behind `LLM_ENABLED=false`. It uses Redis caching, redaction, validation,
+and fail-open behavior. A standalone smoke script (`scripts/llm_smoke.py`) is also available.
 
 The `/analyze` and `/analyze-pr` HTTP endpoints use the same scan pipeline
 synchronously and return the findings as JSON.
@@ -669,10 +669,7 @@ Private repositories require authentication integration.
 
 # 🚀 Future Improvements
 
-- **Wire the opt-in LLM review into the webhook**: merge/dedupe LLM findings with static
-  findings, add Redis caching keyed by `head_sha + prompt version + model`, a daily
-  request budget, and a 30–50 PR evaluation; keep graceful degradation to static-only
-  results when the provider is unavailable
+- **Daily request budget & tighter rate limiting**: add per-repo/daily token/request caps and alerting for LLM usage; expand evaluation set to 30-50 labelled PRs with production traffic metrics
 - **History & metrics**: API + dashboard over the existing `jobs`/`findings`/`reviews`
   tables (per-repo trends, finding counts, scan/review latency)
 - **Evaluation harness**: expanded labelled set (30-50 PRs) with precision/recall measured with and without the LLM step ([see eval results](eval/results.md))
