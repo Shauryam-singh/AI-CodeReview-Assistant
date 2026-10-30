@@ -666,8 +666,7 @@ Private repositories require authentication integration.
   results when the provider is unavailable
 - **History & metrics**: API + dashboard over the existing `jobs`/`findings`/`reviews`
   tables (per-repo trends, finding counts, scan/review latency)
-- **Evaluation harness**: a labelled set of PRs with precision/recall measured with and
-  without the LLM step
+- **Evaluation harness**: expanded labelled set (30-50 PRs) with precision/recall measured with and without the LLM step ([see eval results](eval/results.md))
 - **CI**: lint (ruff), type-check (mypy), backend tests, frontend build, and the Docker
   smoke test on every PR
 - **Rate limiting** per repository/installation and **structured logging** with request

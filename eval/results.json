@@ -1,0 +1,141 @@
+{
+  "results": [
+    {
+      "pr_id": "pr-001",
+      "name": "SQL Injection via string concat",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 1,
+      "merged_count": 1,
+      "tp_llm": 0,
+      "fp_llm": 1,
+      "fn_llm": 1,
+      "precision_llm": 0.0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-002",
+      "name": "Missing null check",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 1,
+      "precision_llm": 0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-003",
+      "name": "Unhandled error",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 1,
+      "precision_llm": 0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-004",
+      "name": "Off-by-one error",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 1,
+      "merged_count": 1,
+      "tp_llm": 0,
+      "fp_llm": 1,
+      "fn_llm": 1,
+      "precision_llm": 0.0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-005",
+      "name": "Weak crypto",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 1,
+      "precision_llm": 0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-006",
+      "name": "Clean code",
+      "ground_truth_count": 0,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 0,
+      "precision_llm": 0,
+      "recall_llm": 1.0
+    },
+    {
+      "pr_id": "pr-007",
+      "name": "Command injection",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 1,
+      "precision_llm": 0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-008",
+      "name": "Path traversal",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 1,
+      "merged_count": 1,
+      "tp_llm": 1,
+      "fp_llm": 0,
+      "fn_llm": 0,
+      "precision_llm": 1.0,
+      "recall_llm": 1.0
+    },
+    {
+      "pr_id": "pr-009",
+      "name": "XSS vulnerability",
+      "ground_truth_count": 1,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 1,
+      "precision_llm": 0,
+      "recall_llm": 0.0
+    },
+    {
+      "pr_id": "pr-010",
+      "name": "Another clean PR",
+      "ground_truth_count": 0,
+      "static_count": 0,
+      "llm_count": 0,
+      "merged_count": 0,
+      "tp_llm": 0,
+      "fp_llm": 0,
+      "fn_llm": 0,
+      "precision_llm": 0,
+      "recall_llm": 1.0
+    }
+  ],
+  "aggregate": {
+    "precision": 0.333,
+    "recall": 0.125,
+    "tp": 1,
+    "fp": 2,
+    "fn": 7
+  }
+}

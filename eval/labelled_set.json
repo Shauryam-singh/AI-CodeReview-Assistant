@@ -1,0 +1,108 @@
+[
+  {
+    "id": "pr-001",
+    "name": "SQL Injection via string concat",
+    "diff": "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1,3 +1,5 @@\n import sqlite3\n \n def get_user(db, name):\n-    return db.execute(\"SELECT * FROM users WHERE name = ?\", (name,))\n+    query = \"SELECT * FROM users WHERE name = '\" + name + \"'\"\n+    return db.execute(query)\n",
+    "changed_files": ["app.py"],
+    "ground_truth": [
+      {"file": "app.py", "line": 4, "category": "sql-injection", "severity": "CRITICAL"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-002",
+    "name": "Missing null check",
+    "diff": "diff --git a/user.py b/user.py\n--- a/user.py\n+++ b/user.py\n@@ -1,4 +1,6 @@\n class User:\n     def get_name(self):\n-        return self.name\n+        name = self.profile.name\n+        return name.upper()\n",
+    "changed_files": ["user.py"],
+    "ground_truth": [
+      {"file": "user.py", "line": 3, "category": "null-check", "severity": "HIGH"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-003",
+    "name": "Unhandled error",
+    "diff": "diff --git a/api.py b/api.py\n--- a/api.py\n+++ b/api.py\n@@ -1,3 +1,5 @@\n def fetch_data(url):\n-    response = requests.get(url)\n-    return response.json()\n+    response = requests.get(url)\n+    data = response.json()\n+    return process(data)\n",
+    "changed_files": ["api.py"],
+    "ground_truth": [
+      {"file": "api.py", "line": 2, "category": "error-handling", "severity": "HIGH"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-004",
+    "name": "Off-by-one error",
+    "diff": "diff --git a/loop.py b/loop.py\n--- a/loop.py\n+++ b/loop.py\n@@ -1,4 +1,5 @@\n def process_items(items):\n     result = []\n-    for i in range(len(items)):\n-        result.append(items[i] * 2)\n+    for i in range(len(items) + 1):\n+        result.append(items[i] * 2)\n     return result\n",
+    "changed_files": ["loop.py"],
+    "ground_truth": [
+      {"file": "loop.py", "line": 3, "category": "logic-error", "severity": "HIGH"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-005",
+    "name": "Weak crypto",
+    "diff": "diff --git a/auth.py b/auth.py\n--- a/auth.py\n+++ b/auth.py\n@@ -1,3 +1,4 @@\n import hashlib\n def hash_password(pw):\n-    return hashlib.sha256(pw.encode()).hexdigest()\n+    return hashlib.md5(pw.encode()).hexdigest()\n",
+    "changed_files": ["auth.py"],
+    "ground_truth": [
+      {"file": "auth.py", "line": 2, "category": "crypto", "severity": "CRITICAL"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-006",
+    "name": "Clean code",
+    "diff": "diff --git a/utils.py b/utils.py\n--- a/utils.py\n+++ b/utils.py\n@@ -1,3 +1,4 @@\n def add(a, b):\n-    return a + b\n+    result = a + b\n+    return result\n",
+    "changed_files": ["utils.py"],
+    "ground_truth": [],
+    "expected_static": false,
+    "expected_llm": false
+  },
+  {
+    "id": "pr-007",
+    "name": "Command injection",
+    "diff": "diff --git a/exec.py b/exec.py\n--- a/exec.py\n+++ b/exec.py\n@@ -1,3 +1,4 @@\n import os\n def run(cmd):\n-    os.system(cmd)\n+    os.system('ls ' + cmd)\n",
+    "changed_files": ["exec.py"],
+    "ground_truth": [
+      {"file": "exec.py", "line": 2, "category": "command-injection", "severity": "CRITICAL"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-008",
+    "name": "Path traversal",
+    "diff": "diff --git a/files.py b/files.py\n--- a/files.py\n+++ b/files.py\n@@ -1,3 +1,4 @@\n def read_file(path):\n-    with open(path) as f:\n-        return f.read()\n+    with open('/var/data/' + path) as f:\n+        return f.read()\n",
+    "changed_files": ["files.py"],
+    "ground_truth": [
+      {"file": "files.py", "line": 2, "category": "path-traversal", "severity": "HIGH"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-009",
+    "name": "XSS vulnerability",
+    "diff": "diff --git a/view.py b/view.py\n--- a/view.py\n+++ b/view.py\n@@ -1,3 +1,4 @@\n def render(name):\n-    return f\"<h1>Hello {name}</h1>\"\n+    return \"<h1>Hello \" + name + \"</h1>\"\n",
+    "changed_files": ["view.py"],
+    "ground_truth": [
+      {"file": "view.py", "line": 2, "category": "xss", "severity": "MEDIUM"}
+    ],
+    "expected_static": false,
+    "expected_llm": true
+  },
+  {
+    "id": "pr-010",
+    "name": "Another clean PR",
+    "diff": "diff --git a/math.py b/math.py\n--- a/math.py\n+++ b/math.py\n@@ -1,3 +1,4 @@\n def multiply(a, b):\n-    return a * b\n+    x = a * b\n+    return x\n",
+    "changed_files": ["math.py"],
+    "ground_truth": [],
+    "expected_static": false,
+    "expected_llm": false
+  }
+]
