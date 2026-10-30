@@ -258,7 +258,7 @@ described below.
 
 ---
 
-## Optional LLM review (Phase 1–2)
+## Optional LLM review (Phases 1–7)
 
 `backend/app/services/llm/` contains an opt-in Gemini review module:
 
@@ -268,12 +268,18 @@ described below.
 | `schema.py` | `LLMFinding` / `LLMReview` Pydantic models |
 | `prompt.py` | Versioned prompt (`PROMPT_VERSION = "1.0.0"`) |
 | `client.py` | Gemini REST client (`responseMimeType: application/json`, timeout, one 429 retry) |
-| `review_service.py` | Redaction, validation, filtering, sanitization, fail-open wrapper |
+| `review_service.py` | Redaction, validation, filtering, sanitization, fail-open wrapper, caching |
+| `cache.py` | Redis caching by provider/model/prompt_version/head_sha with TTL |
+| `../merging.py` | Merge static and LLM findings with deduplication and prioritization |
 
-It is **off by default and not wired into the webhook yet**. It returns `[]` when
-`LLM_ENABLED=false`, when no `LLM_API_KEY` is set, for private repositories unless
-`LLM_ALLOW_PRIVATE_REPOS=true`, or on any request/parse/validation failure. It never
-raises `RetryableScanError`, so it cannot fail a webhook job.
+**Status:** Wired into the webhook pipeline (after static scan, before comment building/recording). Returns `[]` when `LLM_ENABLED=false`, when no `LLM_API_KEY` is set, for private repositories unless `LLM_ALLOW_PRIVATE_REPOS=true`, or on any failure. It never raises `RetryableScanError` or fails the job.
+
+### Merge Policy
+- **Deduplication:** By `(file, line, normalized_message)`
+- **Conflict resolution:** If LLM and static share the same `(file, line)`, keep the static finding and append the LLM suggestion as `**AI suggestion:**`
+- **Sorting:** By severity (CRITICAL > HIGH > MEDIUM > LOW) then confidence (descending)
+- **Tagging:** LLM findings have `tool="llm"` with category stored in `risk`; the review body notes "Some findings are AI-generated; verify before applying."
+- **Limits:** Capped by `MAX_INLINE_COMMENTS=50`, `LLM_MAX_FINDINGS=10`
 
 Set `LLM_ENABLED=true` and `LLM_API_KEY=...` in the gitignored `.env`, then try it on the
 built-in SQL-injection sample (or pass `--diff path/to/file.diff`):
@@ -288,10 +294,13 @@ empty result; it never prints the API key. If Gemini is temporarily unavailable 
 `gemini-3.8-flash` (HTTP 503), try the free fallback with
 `LLM_MODEL=gemini-3.5-flash-lite ./venv/bin/python scripts/llm_smoke.py`.
 
-Safety behavior includes: secret-scanner line hits plus generic token/private-key
+Safety behavior includes: secret-scanner line hits plus generic token/private-key/bearer
 redaction before the diff leaves the process, file/line validation against the diff,
 low-confidence and style-only filtering, a findings cap, and HTML/@mention/link
-sanitization before any output could be posted.
+sanitization before any output could be posted. Results are cached in Redis by
+`llm:{provider}:{model}:{prompt_version}:{head_sha}` with a 7-day TTL; the worker is
+limited to `max_jobs=2` for rate limiting. Each call logs model, prompt version,
+latency, and cache hit/miss.
 
 ---
 
@@ -666,8 +675,7 @@ Private repositories require authentication integration.
   results when the provider is unavailable
 - **History & metrics**: API + dashboard over the existing `jobs`/`findings`/`reviews`
   tables (per-repo trends, finding counts, scan/review latency)
-- **Evaluation harness**: a labelled set of PRs with precision/recall measured with and
-  without the LLM step
+- **Evaluation harness**: expanded labelled set (30-50 PRs) with precision/recall measured with and without the LLM step ([see eval results](eval/results.md))
 - **CI**: lint (ruff), type-check (mypy), backend tests, frontend build, and the Docker
   smoke test on every PR
 - **Rate limiting** per repository/installation and **structured logging** with request

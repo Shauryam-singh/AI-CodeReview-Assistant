@@ -136,12 +136,14 @@ def process_pr_event(payload: dict, job_id: str | None = None):
         diff_text = context.get("diff_text", "") or ""
         secret_findings = scan_results.get("secret_findings", []) or []
 
+        head_sha = (pr.get("head") or {}).get("sha") if isinstance(pr, dict) else None
         llm_results = review_with_llm(
             diff_text,
             changed_files,
             repo_slug=repo_slug,
             repo_private=bool((repo or {}).get("private")),
             secret_findings=secret_findings,
+            head_sha=head_sha,
         )
         llm_issues = []
         for finding in llm_results:

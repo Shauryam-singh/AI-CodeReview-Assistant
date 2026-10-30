@@ -8,8 +8,10 @@ fail a webhook job or trigger the transient-retry path.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from typing import Any
 
 from pydantic import ValidationError
@@ -44,9 +46,7 @@ _KNOWN_TOKEN_RE = re.compile(
     r"xox[baprs]-[A-Za-z0-9-]{10,})\b"
 )
 
-# Reuse the deterministic scanner's AWS/private-key patterns, but not its
-# assignment pattern: the generic assignment replacer below preserves the key
-# name and only removes the value.
+# Reuse the deterministic scanner's AWS/private-key patterns
 _SECRET_SCAN_RE = tuple(
     re.compile(pattern)
     for label, pattern in SECRET_SCAN_PATTERNS.items()
@@ -64,7 +64,7 @@ _HTML_TAG_RE = re.compile(
     r"marquee|video|audio|source|picture|figure|figcaption|h[1-6])\b[^>]*>",
     flags=re.IGNORECASE,
 )
-_MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_MARKDOWN_LINK_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _BARE_URL_RE = re.compile(
     r"(?i)\b(?:https?://|www\.)[^\s<>()\[\]{}\"']+"
 )
@@ -72,6 +72,16 @@ _SUSPICIOUS_SCHEME_RE = re.compile(r"(?i)\b(?:javascript|data|vbscript):[^\s]+")
 _MENTION_RE = re.compile(r"(?<![\w./])@([A-Za-z0-9][A-Za-z0-9-]{0,38})")
 _CODE_SPAN_RE = re.compile(r"(```.*?```|`[^`\n]*`)", flags=re.DOTALL)
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+_SECURITY_TERM_RE = re.compile(
+    r"\b(?:injection|sql|xss|csrf|ssrf|xxe|rce|vulnerab\w*|secret\w*|"
+    r"credential\w*|password\w*|auth|authentication|authorization|permission\w*|"
+    r"deserial\w*|traversal|command|eval|exec|sanitize|validate|encrypt\w*|"
+    r"crypto\w*|leak\w*|race|overflow|unsafe|cors|idor|tls|certificate\w*|"
+    r"redirect|prototype pollution|denial of service|insecure|exploit\w*|"
+    r"attack\w*|signature|jwt|session\w*|cookie\w*|regex|resource)\b",
+    flags=re.IGNORECASE,
+)
 
 _STYLE_CATEGORY_TOKENS = frozenset(
     {"style", "formatting", "format", "lint", "linting", "naming", "whitespace", "pep8"}
@@ -97,15 +107,6 @@ _STYLE_MESSAGE_PHRASES = (
     "code style",
     "variable name",
     "function name",
-)
-_SECURITY_TERM_RE = re.compile(
-    r"\b(?:injection|sql|xss|csrf|ssrf|xxe|rce|vulnerab\w*|secret\w*|"
-    r"credential\w*|password\w*|auth|authentication|authorization|permission\w*|"
-    r"deserial\w*|traversal|command|eval|exec|sanitize|validate|encrypt\w*|"
-    r"crypto\w*|leak\w*|race|overflow|unsafe|cors|idor|tls|certificate\w*|"
-    r"redirect|prototype pollution|denial of service|insecure|exploit\w*|"
-    r"attack\w*|signature|jwt|session\w*|cookie\w*|regex|resource)\b",
-    flags=re.IGNORECASE,
 )
 
 
@@ -164,9 +165,7 @@ def _redacted_line(prefix: str, original: str) -> str:
     return f"{prefix}[REDACTED_SECRET]{newline}"
 
 
-def _redact_lines_by_number(
-    diff_text: str, hits: dict[str, set[int]]
-) -> str:
+def _redact_lines_by_number(diff_text: str, hits: dict[str, set[int]]) -> str:
     if not hits:
         return diff_text
 
@@ -248,12 +247,7 @@ def _redact_lines_by_number(
 
 
 def redact_secrets(diff_text: str, secret_findings: Any = None) -> str:
-    """Redact secret values before the diff leaves the process.
-
-    Uses both the deterministic secret-scanner findings (file/line) and
-    generic assignment/token/private-key patterns so secrets introduced in
-    lines the scanner did not flag are still removed.
-    """
+    """Redact secret values before the diff leaves the process."""
     if not isinstance(diff_text, str) or not diff_text:
         return ""
 
@@ -314,12 +308,6 @@ def _sanitize_prose(text: str) -> str:
 
 
 def sanitize_text(value: Any, max_chars: int = 2_000) -> str:
-    """Strip HTML, @mentions and links from model output before posting.
-
-    Fenced/inline code spans are left intact (GitHub renders them as escaped
-    code, not HTML/links/mentions), which avoids mangling decorators such as
-    ``@app.route(...)`` in a suggested fix.
-    """
     if not isinstance(value, str):
         return ""
 
@@ -499,6 +487,7 @@ def _review_with_llm(
     commentable_lines: dict | None,
     settings: LLMSettings,
     client: LLMClient | None,
+    head_sha: str | None = None,
 ) -> list[LLMFinding]:
     if not isinstance(diff_text, str) or not diff_text.strip():
         return []
@@ -527,6 +516,38 @@ def _review_with_llm(
     if not truncated.strip():
         return []
 
+    # Cache key: llm:{provider}:{model}:{prompt_version}:{head_sha}
+    cache_key = f"llm:{(settings.provider or 'gemini').strip().lower()}:{(settings.model or '').strip()}:{PROMPT_VERSION}:{(head_sha or 'none').strip()}"
+    
+    # Try cache first (sync wrapper) - skip if client is passed (likely in tests)
+    if client is None:
+        try:
+            import asyncio
+            
+            try:
+                loop = asyncio.get_running_loop()
+                # If we're in an async context, skip cache
+            except RuntimeError:
+                # No running loop, we can use asyncio with timeout
+                try:
+                    cached_result = asyncio.run(asyncio.wait_for(_async_get_cache(cache_key), timeout=0.5))
+                    if cached_result is not None:
+                        logger.info("LLM cache hit for %s (model=%s, prompt=%s)", repo_slug or "<unknown>", settings.model, PROMPT_VERSION)
+                        # Reconstruct LLMFinding objects
+                        findings = []
+                        for item in cached_result:
+                            try:
+                                findings.append(LLMFinding.model_validate(item))
+                            except Exception:
+                                pass
+                        return findings
+                except Exception:
+                    pass
+        except Exception:
+            logger.debug("Cache lookup failed, proceeding without cache")
+
+    start_time = time.time()
+    
     if client is None:
         client = build_client(settings)
     if client is None:
@@ -540,24 +561,60 @@ def _review_with_llm(
 
     prompt = build_prompt(truncated, normalized_changed)
     payload = client.generate_json(prompt)
+    
+    latency = time.time() - start_time
+    cache_hit = False
+    
     if payload is None:
-        logger.info("LLM review skipped: no usable response (prompt=%s)", PROMPT_VERSION)
+        logger.info("LLM review skipped: no usable response (prompt=%s, model=%s, latency=%.2fs)", PROMPT_VERSION, settings.model, latency)
         return []
 
     parsed = _parse_findings(payload)
     if not parsed:
-        logger.info("LLM review returned no valid findings (prompt=%s)", PROMPT_VERSION)
+        logger.info("LLM review returned no valid findings (prompt=%s, model=%s, latency=%.2fs)", PROMPT_VERSION, settings.model, latency)
         return []
 
     result = _validate_and_filter(parsed, normalized_changed, commentable, settings)
     logger.info(
-        "LLM review %s: raw=%d valid=%d (prompt=%s)",
+        "LLM review %s: raw=%d valid=%d (prompt=%s, model=%s, latency=%.2fs, cache_hit=%s)",
         repo_slug or "<unknown>",
         len(parsed),
         len(result),
         PROMPT_VERSION,
+        settings.model,
+        latency,
+        cache_hit,
     )
+    
+    # Cache the result
+    if client is None:
+        try:
+            import asyncio
+            
+            try:
+                loop = asyncio.get_running_loop()
+                # In async context, skip cache
+            except RuntimeError:
+                cached_data = [f.model_dump() for f in result]
+                from app.services.llm.cache import get_cache_ttl
+                try:
+                    asyncio.run(asyncio.wait_for(_async_set_cache(cache_key, cached_data, get_cache_ttl()), timeout=0.5))
+                except Exception:
+                    pass
+        except Exception:
+            logger.debug("Cache set failed")
+    
     return result
+
+
+async def _async_get_cache(key: str):
+    from app.services.llm.cache import get_cached_result
+    return await get_cached_result(key)
+
+
+async def _async_set_cache(key: str, result: list, ttl: int):
+    from app.services.llm.cache import set_cached_result
+    return await set_cached_result(key, result, ttl)
 
 
 def review_with_llm(
@@ -570,13 +627,9 @@ def review_with_llm(
     commentable_lines: dict | None = None,
     settings: LLMSettings | None = None,
     client: LLMClient | None = None,
+    head_sha: str | None = None,
 ) -> list[LLMFinding]:
-    """Review a diff with the configured LLM provider.
-
-    Returns an empty list when the feature is disabled, when no key is
-    configured, for private repositories unless explicitly allowed, or on any
-    request/parse/validation failure. It never raises ``RetryableScanError``.
-    """
+    """Review a diff with the configured LLM provider."""
     try:
         return _review_with_llm(
             diff_text,
@@ -587,6 +640,7 @@ def review_with_llm(
             commentable_lines=commentable_lines,
             settings=settings or get_settings(),
             client=client,
+            head_sha=head_sha,
         )
     except Exception:
         logger.exception("LLM review failed; continuing without LLM findings")
